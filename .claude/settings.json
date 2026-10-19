@@ -1,0 +1,5 @@
+{
+  "env": {
+    "DATABRICKS_CONFIG_PROFILE": "aws2"
+  }
+}

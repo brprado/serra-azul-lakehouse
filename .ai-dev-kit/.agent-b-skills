@@ -1,0 +1,15 @@
+databricks-core
+databricks-dabs
+databricks-dbsql
+databricks-docs
+databricks-iceberg
+databricks-jobs
+databricks-lakeflow-connect
+databricks-metric-views
+databricks-pipelines
+databricks-python-sdk
+databricks-spark-structured-streaming
+databricks-synthetic-data-gen
+databricks-unity-catalog
+databricks-zerobus-ingest
+spark-python-data-source

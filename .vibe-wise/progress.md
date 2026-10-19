@@ -1,0 +1,99 @@
+# Learning Progress
+
+## Fase 0 — Estrutura de catálogo/schemas
+
+- Introduced (Claude explicou): namespace de 3 níveis do UC; volumes são objetos de schema; código e dados são árvores separadas; mounts DBFS são legado; dimensões conformadas; 1 metastore por região; configuração fora do código; fatos por processo de negócio (Kimball, bus matrix); opções de controle de acesso por domínio no UC (a pedido do learner).
+- Correção do Staff (2026-10-16): Claude havia afirmado que no Free Edition só existiria o catálogo `workspace`. Teste mostrou que `CREATE CATALOG` via SQL funciona; via API/CLI falha. Docs corrigidos.
+- Learner decisions (até a 7ª rodada): fato de vendas na gold; convenção em inglês (reconfirmada 2x); bronze alinhada à fonte, **prefixo de fonte na bronze** (`bronze.erp_invoice` — nome traduzido para inglês); dimensões conformadas únicas, dono técnico único, aprovação por tipo de mudança; fato pertence ao domínio produtor; schema = camada, tabela = `<prefixo_dominio>_<tabela>`; landing zone em schema próprio com volume por fonte (`<catálogo>.landing-zone.sellout`, caminho `/Volumes/<catálogo>/landing-zone/sellout/<yyyy-mm-dd>/...` — formato de volume finalmente correto); **apenas 1 catálogo** (projeto de estudos, sem CI/CD) — prod fica só no ADR.
+- Demonstrated: aplicou dimensão conformada e ownership por processo; nome de volume agora no formato UC correto.
+- Needs reinforcement: idioma ainda inconsistente nos exemplos (`fato_vendas`, `dim_produto`) e fato sem prefixo de domínio, contrariando a própria regra; regra para identificar dimensão conformada não definida; schema com hífen (`landing-zone`) exige backticks; "porquê" da camada no schema ainda não escrito; frase "cada zona terá suas próprias tabelas gold com fatos e dimensões" pode contradizer a dimensão conformada (pedido de esclarecimento); acesso por domínio — learner pediu sugestão (opções apresentadas, decisão pendente); caminho de landing sem identificação do remetente (14 fontes colidiriam) — sinalizado, layout detalhado estacionado para a fatia 3.
+- Movido para fora do ADR-0001: retenção da bronze (ADR próprio na fatia 1); parametrização (ADR-0002); teste de ownership da cobertura (fatia 2).
+- Estacionado: quarentena e layout interno do landing de sell-out (fatia 3); backfill de atributo em SCD2 (fatia 1).
+
+- 8ª rodada: learner confirmou dimensões compartilhadas por padrão (golds de domínio diferem por regra de negócio); nomes `fact_sales` / `dim_product` (inglês ok, mas sem prefixo de domínio e sem regra de conformada); schema `landing_zone` (sem hífen); arquivo de sell-out `<remetente>-sellout-20261016.csv` (resolve colisão).
+
+- 9ª rodada: learner decidiu **catálogo `serra_azul`** (criar via SQL); fatos e dimensões **sem prefixo de domínio** ("uma venda é uma venda em qualquer domínio" — abandona a regra `<prefixodominio_tabela>`); acesso por domínio **via tags** (exemplos: sales, logistics, invoice).
+- Fato verificado pelo Staff (docs ABAC, 2026-10-16): tags/ABAC **não concedem SELECT em tabelas**. GRANT policies só cobrem models/services/skills (e criá-las exige compute clássico DBR 18+); políticas de row filter/column mask usam tags mas exigem SELECT concedido diretamente. Tags servem para descoberta/documentação e para mascaramento por tag (relevante para PII/LGPD).
+- Needs reinforcement: escolha de acesso por tag se baseou em premissa incorreta (re-decidir); taxonomia de tags mistura domínio e entidade; sem prefixo, colisão de golds de domínio com regras diferentes não tratada; "porquê" da camada no schema ainda não escrito.
+
+- 10ª rodada: learner propôs (diagrama) nova organização: **catálogo por domínio** (commercial, supply, logistics, ...) → schemas bronze/silver/gold → tabelas com prefixo brz/slv/gld. Resolve acesso por domínio via herança de privilégios no catálogo (Claude explicou herança de privilégios do UC). Reabre decisões anteriores: bronze alinhada à fonte (ERP alimenta 2 domínios), dimensões conformadas em local neutro, catálogo único `serra_azul`, ambientes em produção (catálogo = ambiente na 3ª rodada); camada codificada duas vezes (schema + prefixo).
+
+- 11ª rodada: learner pediu sugestão (sem experiência prévia) para onde ficam bronze compartilhada, dim conformada e landing no desenho por domínio; decidiu: workspace atual = "prod" (sem ambientes no projeto); **sem prefixo de camada** (schema já diz a camada). Claude apresentou opções (catálogo de plataforma + catálogos de domínio [recomendada pelo Claude]; bronze no domínio dono do sistema; ingestão duplicada por domínio) — são PROPOSTAS do Claude, não decisões do learner.
+
+- 12ª rodada: learner **aprovou a opção A** (catálogo compartilhado + catálogos de domínio). Justificativa do learner: na B, a dependência de tabelas usadas por vários domínios cairia nas costas de um só domínio; na A, um time técnico é dono da bronze como fonte da verdade. Perguntou nomes usuais para o catálogo compartilhado.
+- Guardado para perguntas de entrevista do fim da fase 0: "o catálogo de plataforma não recria o time central de dados que o data mesh quer evitar?"
+
+- 13ª rodada: learner escolheu nome **`core`** e trocou schema `conformed` → **`gold`**; aceitou regra proposta pelo Claude "core.gold só contém dimensões conformadas". **Design confirmado** (Confirmar e seguir). ADR-0001 escrito em docs/adr/0001-organizacao-de-catalogos-e-schemas.md. Observação: razões "por que não" das alternativas 1 e 2 no ADR vieram da discussão/tabela do Claude (learner não contestou); seção "Em produção" escrita pelo Claude por delegação do learner.
+
+## Fase 0 — ADR-0002 motor de transformação
+
+- Learner proposal (1ª rodada): **SDP**. Razões: mais fácil alterar regras de negócio; SQL legível por analistas/AEs/engenheiros; suporte completo da Databricks; governança e lineage.
+- Needs reinforcement: razões não diferenciam SDP de jobs+notebooks (SQL também roda em jobs; lineage do UC não é exclusiva do SDP — a confirmar pelo learner); não mapeou requisitos da fatia 1 (dedup, SCD2, qualidade, reprocesso); não tratou a restrição de 1 pipeline ativo por tipo; não citou contras.
+- Fato verificado (2026-10-16): doc do Free Edition não define "active" (rodando vs existente); tipos de pipeline = ETL, Ingestion, MV/ST, Database Table Sync; um pipeline roda uma update por vez. SDP pode publicar em outros catálogos via nome totalmente qualificado (skill databricks-pipelines).
+
+- Learner (2ª rodada) descreveu implementação dos requisitos da fatia 1, essencialmente no estilo manual (jobs): dedup por ID do pedido; SCD2 manual com start/end date (mecânica correta); qualidade com constraints/"expect or drop" (vocabulário do SDP); reprocesso com MERGE por chave (insert/update/delete). Não comparou com SDP; itens 2 e 3 não respondidos.
+- Demonstrated: mecânica básica de SCD2 (fechar versão antiga, abrir nova); MERGE como base de idempotência.
+- Needs reinforcement: dedup sem critério de desempate (quase-duplicatas com status atualizado); SCD2 sem detecção de mudança nem eventos fora de ordem; drop de FK órfã apaga faturamento (late-arriving dimension); delete em extração incremental (ausência ≠ remoção).
+- Introduced (Claude): AUTO CDC (SEQUENCE BY, SCD1/2, deletes), expectations (warn/drop/fail + métricas), streaming tables processando cada arquivo uma vez.
+
+- Learner (3ª rodada): dedup = fica a versão mais recente (critério de ordenação não nomeado → SEQUENCE BY); SCD2 = versão nova só quando campos relevantes mudam (manager, job title → TRACK HISTORY ON); perda com SDP = flexibilidade de código, APIs externas, libs Python; não entendeu a pergunta sobre "1 pipeline ativo".
+- Demonstrated: associou desempate por recência e histórico seletivo por atributo (mapeiam para SEQUENCE BY e TRACK HISTORY ON).
+- Needs reinforcement: SDP suporta Python (libs usáveis) — perda declarada está parcialmente incorreta; pergunta do pipeline único re-explicada de forma concreta; frase "por que SDP" ainda não escrita.
+- Movido para a fatia 1 (não muda a escolha do motor): mudança retroativa na hierarquia (qual coluna é a sequência: vigência ou extração), ação da FK órfã (late-arriving dimension), delete em extração incremental.
+- Fato verificado (skill databricks-pipelines): valores da `configuration` do pipeline são interpolados em SQL com `${var}` e lidos em Python com `spark.conf.get`.
+
+- Learner (4ª rodada) decidiu: vários pipelines podem existir, só um roda por vez (leitura B — premissa ainda não verificada); disparo **manual**; **sem parametrização** de catálogo (nomes direto no código). Feedback explícito: "você está complicando demais esse projeto" — Staff reduziu escopo e ofereceu checkpoints mais leves.
+
+- **Design confirmado** (ADR-0002 escrito em docs/adr/0002-motor-de-transformacao.md): SDP, SQL padrão, pipeline `core` + um por domínio, um por vez, disparo manual, nomes de catálogo no código. Detalhes propostos pelo Claude e aceitos: divisão core/domínio, SQL padrão, verificação da premissa "1 rodando", seção "em produção". Learner escolheu ritmo **Leve**.
+
+- Learner pediu incluir parametrização no SQL (revertendo "sem parametrização"); aprovou setup revisado. **Implementado:** setup SQL executado (8/8 ok), schemas `default` vazios removidos, volume testado (escrita/leitura), ADR-0002 atualizado com regra `${catalog_*}` via configuration (verificação no Free Edition pendente), docs/convencoes.md escrito (Claude generalizou o padrão de nome de arquivo da landing para todas as fontes e incluiu regras da skill: CREATE OR REFRESH, sem LIVE., full refresh com aprovação).
+
+## Fase 0 — Encerramento (perguntas de entrevista)
+
+- Q1 (catálogo central vs data mesh): resposta boa — maturidade/data literacy de empresa early stage; descentralizar quando domínios assumirem dados e tiverem times próprios. Faltou: gatilhos observáveis, ligar ao próprio desenho (gold já é por domínio), papel da plataforma como habilitadora.
+- Q2 (SDP vs notebooks): fraca no porquê ("foi mais gosto") — não usou os mecanismos aprendidos (AUTO CDC, expectations, checkpoint); contraexemplo parcialmente certo (APIs com lógica imperativa), mas ERP/CRM têm conectores gerenciados (Lakeflow Connect).
+- **Fase 0 concluída** (2026-10-16).
+
+## Fatia 1 — Fatos de vendas
+
+- Learner: grão inicial = pedido (cabeçalho) → revisou para **item do pedido** após pergunta sobre "vendas por marca". Primeira ideia: fato único com flag "faturado" (Claude nomeou: accumulating snapshot) → revisou para fatos separados por processo.
+- Learner (3ª rodada): `fact_sales` = cabeçalho + itens do pedido, grão item, com `order_id` (dimensão degenerada — conceito introduzido pelo Claude); NF sem itens → pediu ao "time do ERP" para mudar a definição dos dados; lista: fact_sales (grão item) e fact_invoice (grão nota).
+- Demonstrated: grão atômico para permitir slice por atributo de item; fato por processo aplicado a pedido vs faturamento.
+- Needs reinforcement: grão do fact_invoice (nota) inconsistente com o pedido de NF por item; não respondeu qual fato atende qual stakeholder nem qual data define "ontem"; nomes ainda misturam idiomas (fato_).
+
+- Learner (4ª–5ª rodadas): fact_invoice no grão item da NF; Diretor lê fact_sales, Controladoria lê fact_invoice; data do fact_sales inicialmente "data de atualização da tabela" (tempo de processamento) → corrigiu para **data da venda** após Concept tempo do evento vs processamento.
+- **Design confirmado** → ADR-0003 escrito (docs/adr/0003-fatos-de-vendas-e-faturamento.md). Propostas do Claude aceitas: `_updated_at` técnico, `order_id` no fact_invoice, devoluções com `invoice_type` e sinal negativo, cancelados mantidos com `order_status` e filtrados no dashboard. Caso de negócio 5.1 atualizado com `erp_notas_fiscais_itens` (Claude incluiu a sujeira "faturamento parcial"). Razões "por que não" das alternativas no ADR vêm das perguntas do Staff que levaram o learner a revisar.
+
+## Ferramental — subagentes (2026-10-19)
+
+- Learner perguntou quais subagentes criar; Claude propôs 5 (tabela com critério de quando um subagente vale a pena). Learner pediu para criar os 5, sem responder "quais primeiro e por quê" (pergunta de priorização ficou sem resposta).
+- Implementado pelo Claude (detalhes propostos por ele): prompts, modelos, hook `databricks_guard.py`, formato dos manifestos de sujeiras em `data_gen/<fonte>/`, fluxo em 2 etapas do synthetic-data (plano → geração), independência do interviewer (não lê `.vibe-wise/` nem `notes.md`).
+
+## Discussão das dimensões (encerrada em 2026-10-19 pela revisão)
+
+- Checkpoint: **Fatia 1 — dimensões e estratégia de SCD** (Build checkpoint, awaiting reasoning).
+- 2026-10-19: learner pediu para "destrinchar" as dimensões antes de decidir. Claude explicou (Concept) SCD 0/1/2 escolhido por atributo (`TRACK HISTORY ON`) e descreveu cada dimensão com cenário-teste: SKU reaproveitado como questão de identidade da chave; versão falsa por grafia de cidade (limpeza antes do SCD?); PII na gold vs requisito LGPD; vigência do ERP vs detecção por comparação de extrações (cadastro retroativo); surrogate vs chave natural como consequência do SCD2. Abriu: cliente do canal distribuidor está na `dim_pos`?; intervalo da `dim_date`.
+- Learner (dim_pos): SCD2 "porque o Diretor faz perguntas que podem envolver o histórico do PDV"; histórico completo permite correlacionar com fatos da mesma época. Demonstrated: benefício point-in-time do SCD2. Needs reinforcement: justificativa genérica (vale para qualquer coluna); aplicou à tabela inteira, sem escolher por atributo; não respondeu aos cenários (canal do Bar do Zé, telefone). Claude devolveu 2 testes: quais atributos o Diretor precisa "como era"; efeito de versionar tudo quando o ERP corrige grafia de cidade em massa.
+- Learner (dim_pos, rodada 2): SCD2 só em endereço, cidade, UF, região e canal (PII fora). Demonstrated: escolha de SCD por atributo. Não disse o que acontece com razão social/status. Não entendeu o teste da grafia → Claude reformulou com exemplo de versões (Sta Luzia → Santa Luzia).
+- Learner (grafia, rodada 3): (1) "aparece só uma cidade, porque o registro antigo tem data fim e o outro é o ativo" → **misconception**: confunde join point-in-time (fato liga à versão vigente na data do evento) com filtro de versão ativa; se fosse assim, SCD2 = SCD1 no dashboard. (2) Correção de grafia não é mudança de negócio, é estética → padronizar por de-para de CEP ou API de CEP na inclusão do PDV. Demonstrated: distinguir mudança de negócio de problema de qualidade; canonicalizar antes de versionar. Claude devolveu: pergunta socrática com o canal do Bar do Zé (versão ativa vs SCD1); API de CEP vs rede restrita do Free Edition e SLA 8h; camada da padronização vs ponto de comparação do SCD.
+- Learner (rodada 4): (1) corrigiu-se: relatório cruza data da venda com a vigência (`BETWEEN início AND fim`), não filtra a versão ativa. Demonstrated: join point-in-time. (2) padronização na silver (antes do SCD na gold); "usar alguma API confiável que irei buscar" — não respondeu à falha da API às 5h. Claude apontou: CEPs são sintéticos (API real não os conhece); fim nulo da versão ativa no BETWEEN (detalhe de implementação); quem faz o join (dashboard vs pipeline) = decisão surrogate vs natural, para o ADR das dimensões.
+- Learner (rodada 5): "CEPs sintéticos também; ignore" e "ignore" a falha da API → API de CEP fora do escopo; padronização de cidade na silver com referência CEP→cidade sintética. Pediu para seguir.
+- **dim_pos (parcial, a confirmar no Design checkpoint das dimensões):** SCD2 em endereço, cidade, UF, região, canal; padronização de cidade na silver; join point-in-time. Em aberto: razão social/status, PII na gold, surrogate vs natural.
+- Próximo: dim_product (SKU reaproveitado) + dim_date; depois hierarquia (João) e "região" geográfica vs comercial.
+- Learner (rodada 6): dim_product — SKU reaproveitado "é um novo produto", mas "o que identifica a linha é o SKU" → **contradição**: dois produtos com a mesma chave. Não respondeu quais atributos guardam histórico. dim_date — sem SCD; recarga quando se aproximar do fim do intervalo. Demonstrated: dim_date estática (tipo 0). Claude devolveu pergunta socrática sobre a chave do produto; anotou proposta futura de intervalo largo na dim_date.
+- (Ferramental) Learner pediu "ative o mod de agentes": Claude copiou o mod `agent-board` (de outra sessão) para os dev-mods desta sessão; validate + test ok; learner habilitou hot reload; carregado.
+- Learner (rodada 7): dim_product SCD2 em que o produto novo com o mesmo SKU vira a versão ativa e o antigo fica inativo; janeiro mostra o produto vigente na época. "O que identifica o produto de forma única? Tô na dúvida" → **travou, pediu ajuda**. Claude explicou (Concept) chave natural vs chave substituta/identidade, mostrou as falhas da opção dele (visão "como é hoje" atribui vendas da Pilsen à Névoa Zero; série por SKU quebra na fatia 5) e deu 3 opções com trade-offs: A) SCD2 pelo SKU; B) id interno imutável do ERP (contrato de dados); C) regra no pipeline que gera chave nova quando muda marca/categoria. Decisão devolvida ao learner.
+- Learner (rodada 8): "opção B" (id interno imutável do ERP), sem justificativa e sem dizer o que o fact_sales guarda. Claude pediu o porquê (B vs C) e a chave no fato, numa pergunta curta.
+- 2026-10-19: learner pausou o modo de aprendizado ("Pause learning"). Pendentes ao retomar: por que B vs C e chave do produto no fact_sales; hierarquia comercial (João, região geográfica vs comercial); propostas de fechamento (razão social/status/PII da dim_pos, surrogate vs natural, intervalo da dim_date, `product_id` no caso de negócio); Design checkpoint das dimensões → ADR.
+- Workspace: catálogos/schemas da fase 0 criados em 2026-10-16 (ver project-map). Nada da fatia 1 implementado.
+
+## Revisão 2026-10-19 — papéis invertidos
+
+- Learner pediu: Claude passa a ser o Sênior que decide e implementa; justificar tudo, revisar decisões anteriores e aplicar a melhor prática. CLAUDE.md reescrito (papéis, "como o Sênior trabalha", ADR imutável).
+- Decisões a partir daqui são **do Claude**, não demonstrações do learner. Escritas: ADR-0004 (nomes dim_customer/dim_sales_rep, prefixo de fonte na silver, convenção de colunas, landing por dataset, PII por minimização), ADR-0005 (Git + bundle + Job pausado, validate-only, 1 target), ADR-0006 (dimensões: identidade antes de histórico, SCD a partir da vigência do ERP, intervalo semiaberto, chaves xxhash64 + _id durável, -1 para órfãs, região comercial, volume_hl), ADR-0007 (retenção por tipo de extração). Status de 0001–0003 apontam para as emendas. Convenções v2, caso de negócio e roadmap atualizados; docs/revisao-2026-10-19.md com veredito por decisão. Prompts dos subagentes atualizados. Git inicializado (sem commit).
+- Escolhas do learner mantidas: SCD2 por atributo na dim_customer, padronização de cidade na silver, opção B no produto, dim_date sem SCD. Ajustadas: BETWEEN → semiaberto; produto vira tipo 1 após resolver identidade; dim_date com intervalo largo.
+- Pendentes anteriores (B vs C, João, região, fechamento) foram decididos pelo Claude no ADR-0006 — não ficam mais pendentes para o learner.
+
+## Pending decision
+
+- Nenhuma do learner. Próximo passo (do Claude): implementar a fatia 1 (dados sintéticos → bundle + pipeline core → commercial → job → dashboard). Commit inicial aguardando "ok" do learner.
