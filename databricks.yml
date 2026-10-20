@@ -1,0 +1,34 @@
+# Bundle do lakehouse Serra Azul (ADR-0005): pipelines, jobs e dashboard como código.
+# Catálogos e schemas NÃO são criados aqui: no Free Edition a API não cria catálogos (ver setup/*.sql).
+bundle:
+  name: serra_azul
+
+include:
+  - resources/*.yml
+
+# Só o código executável vai para o workspace; notas, skills e documentação ficam locais.
+sync:
+  exclude:
+    - .claude/**
+    - .ai-dev-kit/**
+    - .vibe-wise/**
+    - docs/**
+    - notebooks/**
+    - setup/**
+    - GUIA_AI_DEV_KIT.md
+    - notes.md
+
+variables:
+  catalog_core:
+    description: Catálogo alinhado à fonte (landing, bronze, silver) e das dimensões conformadas
+    default: core
+  catalog_commercial:
+    description: Catálogo do domínio comercial (fatos e agregados)
+    default: commercial
+
+targets:
+  # Um único target: o workspace de estudo é o "prod" do projeto (ADR-0005).
+  prod:
+    default: true
+    workspace:
+      profile: aws2

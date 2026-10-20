@@ -1,0 +1,41 @@
+{
+  "semente": 20261019,
+  "periodo": [
+    "2025-04-19",
+    "2026-10-18"
+  ],
+  "data_extracao": "2026-10-19",
+  "escala": 1.0,
+  "caminho": "/Volumes/core/landing/erp/produtos/2026-10-19",
+  "linhas": 126,
+  "produtos": 92,
+  "skus_distintos": 89,
+  "skus_reaproveitados": {
+    "100536": [
+      "P00086",
+      "P00090"
+    ],
+    "100549": [
+      "P00088",
+      "P00091"
+    ],
+    "100551": [
+      "P00089",
+      "P00092"
+    ]
+  },
+  "eans_duplicados": {
+    "7895821000048": [
+      "P00004",
+      "P00041"
+    ],
+    "7895821000116": [
+      "P00011",
+      "P00063"
+    ]
+  },
+  "produtos_com_descricao_padronizada_em_2025_11_01": 24,
+  "produtos_descontinuados": 10,
+  "lancamentos_na_janela": 19,
+  "ativos_no_fim": 82
+}

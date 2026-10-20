@@ -18,6 +18,8 @@ CREATE SCHEMA IF NOT EXISTS core.gold
 
 CREATE VOLUME IF NOT EXISTS core.landing.erp
   COMMENT 'Landing dos extratos do ERP (fatia 1)';
+CREATE VOLUME IF NOT EXISTS core.landing.ref
+  COMMENT 'Dados de referência mantidos pela engenharia (ex.: CEP → município). Fatia 1, ADR-0006';
 
 -- Catálogo do domínio comercial (dono: comercial)
 CREATE CATALOG IF NOT EXISTS commercial

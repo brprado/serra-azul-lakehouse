@@ -7,7 +7,7 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
 | Etapa | Entregável visível | Status |
 |---|---|---|
 | Fase 0 — Fundação | Esqueleto do lakehouse + convenções | ✅ concluída — ADR-0001/0002, catálogos `core`/`commercial` criados, [convenções](convencoes.md); revisada em 2026-10-19 (ADR-0004/0005) |
-| Fatia 1 — Comercial | Dashboard de vendas por região/marca | 🟨 em andamento — modelagem fechada (ADR-0003, 0006) e retenção (ADR-0007); próximo: dados sintéticos e pipelines |
+| Fatia 1 — Comercial | Dashboard de vendas por região/marca | 🟨 em andamento — modelagem fechada (ADR-0003, 0006), retenção (ADR-0007), carga inicial do ERP na landing ([dicionário](dicionario-de-dados-erp.md)); próximo: pipeline `core` |
 | Fatia 2 — Supply chain | Cobertura de estoque por CD | ⬜ não iniciada |
 | Fatia 3 — Sell-out | Sell-in vs sell-out | ⬜ não iniciada |
 | Fatia 4 — Logística | OTIF | ⬜ não iniciada |

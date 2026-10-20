@@ -1,0 +1,22 @@
+{
+  "semente": 20261019,
+  "periodo": [
+    "2025-04-19",
+    "2026-10-18"
+  ],
+  "data_extracao": "2026-10-19",
+  "escala": 1.0,
+  "caminho": "/Volumes/core/landing/erp/pedidos_cab/2026-10-19",
+  "linhas": 821048,
+  "pedidos_distintos": 805153,
+  "duplicatas_exatas": 11994,
+  "quase_duplicatas_status_antigo": 3901,
+  "pedidos_por_status_final": {
+    "ABERTO": 141,
+    "PARCIALMENTE FATURADO": 130,
+    "CANCELADO": 18190,
+    "FATURADO": 786692
+  },
+  "cancelados_apos_faturamento": 2200,
+  "pedidos_de_clientes_fora_da_carga": 313
+}

@@ -24,7 +24,7 @@ A **Cervejaria Serra Azul** é uma fabricante de bebidas fundada em 1998 em Belo
 | Névoa Zero | Cerveja sem álcool | Aposta de crescimento |
 | Guará Serra | Refrigerante de guaraná | Diversificação, PET |
 
-Embalagens: lata 269/350/473 ml, long neck 330 ml, garrafa retornável 600 ml, barril 30/50 L, PET 2 L. Combinações marca × líquido × embalagem × pack geram **~120 SKUs ativos**.
+Embalagens: lata 269/350/473 ml, long neck 330 ml, garrafa retornável 600 ml, barril 30/50 L, PET 2 L. Combinações marca × líquido × embalagem × pack geram **~80 SKUs ativos** (92 produtos ao longo dos 18 meses, contando lançamentos, promoções e descontinuados).
 
 ## 3. Stakeholders e o que cada um precisa
 
@@ -59,9 +59,9 @@ Horizonte: **18 meses de história** para o ERP/estoque/logística e **12 meses*
 | `erp_notas_fiscais` | 1 linha por NF | ~850 mil | NF de devolução misturada com venda; divergência centavos vs pedido |
 | `erp_notas_fiscais_itens` | 1 linha por item de NF | ~3 mi | *Incluída em 2026-10-16 a pedido da engenharia (ADR-0003), para permitir faturamento por SKU/marca.* Valor do item diverge em centavos do item do pedido; itens de NF de devolução misturados com itens de venda; faturamento parcial (um item de pedido dividido em mais de uma NF) |
 | `erp_clientes_pdv` | 1 linha por cliente (PDV, distribuidor ou rede) **por versão de cadastro**, com data de início de vigência | 40 mil clientes, ~70 mil versões | **PII**: CNPJ/CPF, nome do responsável, e-mail, telefone; ~2% CNPJs inválidos; mudanças de endereço, razão social e canal ao longo do tempo; grafias inconsistentes de cidade ("Sta Luzia", "Santa Luzia") |
-| `erp_produtos` | 1 linha por produto (`product_id`, id interno nunca reaproveitado) por versão; o SKU é atributo | ~160 | SKU descontinuado e **reaproveitado** para outro produto (novo `product_id`); EAN duplicado; descrição alterada |
+| `erp_produtos` | 1 linha por produto (`product_id`, id interno nunca reaproveitado) por versão; o SKU é atributo | ~130 versões (92 produtos, ~80 ativos) | SKU descontinuado e **reaproveitado** para outro produto (novo `product_id`); EAN duplicado; descrição alterada |
 | `erp_tabela_preco` | SKU × canal × vigência | ~8 mil | Vigências sobrepostas; reajuste retroativo. *Fora da fatia 1 (ADR-0006).* |
-| `erp_hierarquia_comercial` | vendedor → supervisor → gerente → região, por vigência | ~600 | **Reorganização trimestral** (vendedor muda de supervisor/região), às vezes cadastrada dias depois do início da vigência — o primeiro SCD tipo 2 do projeto |
+| `erp_hierarquia_comercial` | vendedor → supervisor → gerente → região, por vigência | ~500 | **Reorganização trimestral** (vendedor muda de supervisor/região), às vezes cadastrada dias depois do início da vigência — o primeiro SCD tipo 2 do projeto |
 | `cep_municipio` (referência) | 1 linha por CEP | ~5 mil (os CEPs usados pelos clientes) | Sem sujeira: é a referência usada para padronizar a cidade do cadastro. *Incluída em 2026-10-19 (ADR-0006).* |
 
 **Campos estruturais exigidos pela modelagem** (ADR-0006, 2026-10-19), além das colunas naturais de cada dataset:
@@ -69,6 +69,7 @@ Horizonte: **18 meses de história** para o ERP/estoque/logística e **12 meses*
 - `erp_notas_fiscais_itens` traz `order_id` e `order_item_number` (o item de pedido que está sendo faturado).
 - `erp_clientes_pdv`, `erp_produtos` e `erp_hierarquia_comercial` trazem `valid_from` em cada versão; a extração full traz o histórico inteiro de versões.
 - Os extratos chegam em Parquet em `/Volumes/core/landing/erp/<dataset>/<AAAA-MM-DD>/` (ADR-0004).
+- **Carga inicial gerada em 2026-10-19:** colunas, regras, volumes reais e contagem de cada sujeira em [dicionario-de-dados-erp.md](dicionario-de-dados-erp.md).
 
 ### 5.2 Produção e estoque
 
@@ -100,6 +101,8 @@ Horizonte: **18 meses de história** para o ERP/estoque/logística e **12 meses*
 ### 5.6 Desbalanceamento regional (proposital, em todos os fatos)
 
 SE 45% · S 20% · NE 18% · CO 10% · N 7% — para forçar conversas sobre skew em joins e agregações.
+
+Nos dados gerados, essa é a distribuição dos PDVs. Em volume, o Sudeste chega a ~56%, porque as duas redes nacionais compram pela matriz em SP — o que também separa região geográfica de região comercial (ADR-0006).
 
 ## 6. Requisitos não funcionais
 

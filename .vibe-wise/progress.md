@@ -96,4 +96,4 @@
 
 ## Pending decision
 
-- Nenhuma do learner. Próximo passo (do Claude): implementar a fatia 1 (dados sintéticos → bundle + pipeline core → commercial → job → dashboard). Commit inicial aguardando "ok" do learner.
+- Nenhuma do learner. Feito em 2026-10-19 (Claude, com aprovação do plano pelo learner): commit inicial; bundle + job; carga inicial sintética do ERP na landing, validada (calibração, 4 histórias, integridade); dicionário de dados pedido pelo learner. Próximo: pipeline `core`.

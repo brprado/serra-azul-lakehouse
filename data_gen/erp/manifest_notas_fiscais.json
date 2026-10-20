@@ -1,0 +1,17 @@
+{
+  "semente": 20261019,
+  "periodo": [
+    "2025-04-19",
+    "2026-10-18"
+  ],
+  "data_extracao": "2026-10-19",
+  "escala": 1.0,
+  "caminho": "/Volumes/core/landing/erp/notas_fiscais/2026-10-19",
+  "linhas": 838957,
+  "nfs_de_venda_cfop_5102_6102": 827799,
+  "nfs_de_devolucao_cfop_1202_2202": 11158,
+  "pedidos_com_faturamento_parcial_em_2_nfs": 39110,
+  "pedidos_parciais_aguardando_2a_nf": 130,
+  "devolucoes_parciais": 8958,
+  "devolucoes_por_cancelamento_apos_faturamento": 2200
+}

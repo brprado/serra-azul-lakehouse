@@ -1,0 +1,12 @@
+{
+  "semente": 20261019,
+  "periodo": [
+    "2025-04-19",
+    "2026-10-18"
+  ],
+  "data_extracao": "2026-10-19",
+  "escala": 1.0,
+  "caminho": "/Volumes/core/landing/erp/pedidos_itens/2026-10-19",
+  "linhas": 2934877,
+  "itens_com_quantidade_e_valor_negativos": 3038
+}

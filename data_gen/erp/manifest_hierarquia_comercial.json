@@ -1,0 +1,17 @@
+{
+  "semente": 20261019,
+  "periodo": [
+    "2025-04-19",
+    "2026-10-18"
+  ],
+  "data_extracao": "2026-10-19",
+  "escala": 1.0,
+  "caminho": "/Volumes/core/landing/erp/hierarquia_comercial/2026-10-19",
+  "linhas": 505,
+  "vendedores": 146,
+  "versoes_iniciadas_na_janela": 375,
+  "mudancas_cadastradas_com_atraso": 84,
+  "vendedores_migrados_ne_para_se_em_2026_07_01": 6,
+  "troca_de_gerente_ne_em_2026_01_01": "G07",
+  "vigentes_hoje": 140
+}

@@ -1,0 +1,22 @@
+{
+  "semente": 20261019,
+  "periodo": [
+    "2025-04-19",
+    "2026-10-18"
+  ],
+  "data_extracao": "2026-10-19",
+  "escala": 1.0,
+  "caminho": "/Volumes/core/landing/erp/clientes_pdv/2026-10-19",
+  "linhas": 72650,
+  "clientes": 39773,
+  "por_tipo": {
+    "PDV": 39759,
+    "DISTRIBUIDOR": 12,
+    "REDE": 2
+  },
+  "clientes_pessoa_fisica_cpf": 3143,
+  "documentos_invalidos": 735,
+  "versoes_com_grafia_de_cidade_divergente_do_cep": 7264,
+  "versoes_esperadas_na_dim_customer_apos_fusao": 47166,
+  "clientes_fora_da_carga_fk_orfa": 227
+}
