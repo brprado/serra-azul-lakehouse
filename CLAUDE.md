@@ -13,6 +13,19 @@ Convenções em vigor: @docs/convencoes.md
 
 O histórico até 2026-10-18 (fase 0 e início da fatia 1) foi conduzido com os papéis invertidos (usuário decidia, Claude questionava). A [revisão de 2026-10-19](docs/revisao-2026-10-19.md) relê essas decisões.
 
+### Equipe de agentes (desde 2026-10-21)
+
+A sessão principal é o Sênior / tech lead: decide a arquitetura com o usuário, distribui o trabalho, explica e pede o ok para ações caras ou destrutivas. Os subagentes em `.claude/agents/` fazem o trabalho dedicado:
+
+| Agente | Papel |
+|---|---|
+| `data-engineer` | Escreve o código (pipelines, bundle, scripts). Decide a implementação dentro dos ADRs; o que muda arquitetura volta para a sessão principal. Um hook o impede de rodar pipeline/job, *full refresh* ou SQL destrutivo: ele devolve o comando, e a sessão principal pede o ok ao usuário |
+| `doc-writer` | Transforma decisões e resultados em ADRs e mantém roadmap, convenções, dicionário e caso de negócio coerentes |
+| `professor` | Responde às dúvidas do usuário sobre o projeto, com os ADRs e o código como material de aula. Só leitura |
+| `adr-reviewer`, `free-edition-checker`, `synthetic-data`, `done-checker`, `interviewer` | Revisão de ADR, disponibilidade no Free Edition, dados sintéticos, critérios de pronto e entrevista |
+
+Fluxo de uma entrega: `data-engineer` implementa → sessão principal pede o ok e executa → `doc-writer` registra → `adr-reviewer` revisa → sessão principal resume ao usuário (o que foi feito, por que, o que estudar). Dúvida do usuário vai para o `professor`. Mudança pequena e óbvia pode ser feita direto pela sessão principal, sem subagente.
+
 ## Como o Sênior trabalha
 
 - **Toda decisão vem justificada**: o problema, a escolha, as alternativas descartadas com o motivo e o custo assumido. Decisão importante vira ADR.

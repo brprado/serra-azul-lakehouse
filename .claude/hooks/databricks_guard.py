@@ -4,6 +4,8 @@ Modes:
   profile   -> blocks Databricks commands that target a profile other than aws2.
   readonly  -> profile check + only allows read-only Databricks commands
                (SELECT/SHOW/DESCRIBE queries, list/get verbs, fs ls/cat).
+  engineer  -> profile check + blocks what needs the user's ok (CLAUDE.md): running a pipeline/job
+               (except --validate-only), full refresh, destructive SQL, bundle destroy, fs rm.
 
 Exit 0 allows the call; exit 2 blocks it and the stderr message is shown to the subagent.
 Any parsing failure blocks the call (fail closed).
@@ -26,6 +28,11 @@ WRITE_KEYWORDS = re.compile(
 )
 # Query flags that take a value (the value is not SQL).
 QUERY_VALUE_FLAGS = {"--warehouse", "--output", "-o", "--param", "--profile", "-p", "--file", "-f"}
+# Engineer mode: SQL that destroys data, and verbs that process data (consume quota) or delete resources.
+DESTRUCTIVE_SQL = re.compile(r"\b(DROP|TRUNCATE|DELETE|VACUUM)\b", re.IGNORECASE)
+RUN_VERBS = (["bundle", "run"], ["pipelines", "start-update"], ["jobs", "run-now"], ["jobs", "submit"])
+DESTROY_VERBS = (["bundle", "destroy"], ["fs", "rm"])
+ASK_MAIN = "precisa do ok do usuário: devolva o comando, o custo e o efeito esperado ao agente principal."
 
 
 def block(reason):
@@ -91,6 +98,30 @@ def check_readonly(command, tokens):
     block("só são permitidos: query SQL de leitura, verbos list*/get* e fs ls/cat.")
 
 
+def check_engineer(tokens):
+    for seg in segments(tokens):
+        if "databricks" not in seg:
+            continue
+        flags = [t for t in seg if t.startswith("-")]
+        words = [t for t in seg[seg.index("databricks") + 1:] if not t.startswith("-")]
+        sql = " ".join(seg)
+        for i, tok in enumerate(seg):
+            if tok == "--file" and i + 1 < len(seg):
+                try:
+                    with open(seg[i + 1], encoding="utf-8") as fh:
+                        sql += " " + fh.read()
+                except OSError:
+                    block(f"não consegui ler o arquivo SQL {seg[i + 1]} para validar.")
+        if DESTRUCTIVE_SQL.search(sql):
+            block(f"DROP/TRUNCATE/DELETE/VACUUM {ASK_MAIN}")
+        if any(f.startswith("--full-refresh") for f in flags):
+            block(f"full refresh {ASK_MAIN}")
+        if words[:2] in RUN_VERBS and "--validate-only" not in flags:
+            block(f"executar pipeline ou job consome cota (só --validate-only é livre); {ASK_MAIN}")
+        if words[:2] in DESTROY_VERBS:
+            block(f"'{' '.join(words[:2])}' {ASK_MAIN}")
+
+
 def check_query(command, tokens):
     if WRITE_KEYWORDS.search(command):
         block("a consulta contém palavra-chave de escrita (INSERT, MERGE, DROP, CREATE, ...). Só leitura.")
@@ -136,6 +167,8 @@ def main():
     check_profile(command, tokens)
     if mode == "readonly":
         check_readonly(command, tokens)
+    elif mode == "engineer":
+        check_engineer(tokens)
     sys.exit(0)
 
 
