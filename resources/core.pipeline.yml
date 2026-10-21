@@ -1,0 +1,19 @@
+# Pipeline core (ADR-0002, ADR-0008): landing -> bronze -> silver -> dimensões conformadas em core.gold.
+# Catálogo padrão vem da variável do bundle; o SQL usa schema.tabela e ${catalog_core} só no caminho do volume.
+resources:
+  pipelines:
+    core:
+      name: core
+      catalog: ${var.catalog_core}
+      schema: bronze
+      serverless: true
+      continuous: false
+      channel: CURRENT
+      configuration:
+        catalog_core: ${var.catalog_core}
+        # Free Edition: uma falha determinística repetida 5 vezes queimaria a cota; 1 nova tentativa basta para falhas transitórias.
+        pipelines.numUpdateRetryAttempts: "1"
+        pipelines.maxFlowRetryAttempts: "1"
+      libraries:
+        - glob:
+            include: ../src/pipelines/core/**

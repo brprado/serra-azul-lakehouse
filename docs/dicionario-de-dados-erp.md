@@ -147,7 +147,7 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | `tipo_cliente` | string | `PDV`, `DISTRIBUIDOR` ou `REDE`: define o canal de venda | `customer_type` → `sales_channel` |
 | `segmento` | string | Tipo de estabelecimento do PDV; `DISTRIBUIDOR` / `SUPERMERCADO` para os demais. Pode mudar entre versões | `trade_segment` |
 | `tipo_pessoa` | string | `J` (CNPJ) ou `F` (CPF; 3.143 PDVs são pessoa física) | `person_type` |
-| `cnpj_cpf` | string | Documento, só dígitos (14 ou 11). ⚠ PII | só `is_document_valid` |
+| `cnpj_cpf` | string | Documento, só dígitos (14 ou 11). CNPJ alfanumérico ainda não previsto no contrato ([ADR-0009](adr/0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md)). ⚠ PII | só `is_document_valid` (módulo 11; dígitos todos iguais = inválido) |
 | `razao_social` | string | Nome jurídico. Quando a pessoa é física, é o nome da pessoa. ⚠ PII para CPF | `legal_name` (só PJ) |
 | `nome_fantasia` | string | Nome comercial (ex.: "BAR DO …", "MERCADO …") | `trade_name` |
 | `nome_responsavel`, `email`, `telefone` | string | Contato do responsável. ⚠ PII | não vão |
@@ -324,6 +324,7 @@ Sem sujeira: é a régua usada para limpar o cadastro. Cobre 49 municípios.
 |---|---|---|
 | Valor diverge do pedido em ±1 a 3 centavos | 90.031 itens (~3%) | Esperado: o faturamento vale o fiscal; diferença visível na conciliação |
 | Itens de devolução misturados | 25.357 | `invoice_type` pelo CFOP |
+| **Não planejado:** item com quantidade 0 na 2ª NF de um faturamento parcial (defeito do gerador quando o item pedido tinha 2 unidades) | 16.285 itens, 945 NFs só com esses itens | Descartado na silver (`DROP ROW`); gerador corrigido depois desta carga (ADR-0008) |
 
 **Integridade verificada:**
 - todo item de NF aponta para um item de pedido existente;

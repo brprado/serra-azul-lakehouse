@@ -7,7 +7,7 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
 | Etapa | Entregável visível | Status |
 |---|---|---|
 | Fase 0 — Fundação | Esqueleto do lakehouse + convenções | ✅ concluída — ADR-0001/0002, catálogos `core`/`commercial` criados, [convenções](convencoes.md); revisada em 2026-10-19 (ADR-0004/0005) |
-| Fatia 1 — Comercial | Dashboard de vendas por região/marca | 🟨 em andamento — modelagem fechada (ADR-0003, 0006), retenção (ADR-0007), carga inicial do ERP na landing ([dicionário](dicionario-de-dados-erp.md)); próximo: pipeline `core` |
+| Fatia 1 — Comercial | Dashboard de vendas por região/marca | 🟨 em andamento — modelagem fechada (ADR-0003, 0006), retenção (ADR-0007), carga inicial do ERP na landing ([dicionário](dicionario-de-dados-erp.md)), pipeline `core` com bronze, silver e dimensões (ADR-0008, 0009); próximo: pipeline `commercial` |
 | Fatia 2 — Supply chain | Cobertura de estoque por CD | ⬜ não iniciada |
 | Fatia 3 — Sell-out | Sell-in vs sell-out | ⬜ não iniciada |
 | Fatia 4 — Logística | OTIF | ⬜ não iniciada |
@@ -48,7 +48,7 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
   - ✅ FKs órfãs: membro desconhecido `-1`, corrigido na recomputação (ADR-0006);
   - ✅ PII do cadastro: não sai da bronze (ADR-0004);
   - ✅ retenção da bronze (ADR-0007);
-  - ⬜ tratamento das duplicatas de pedido (dedup na silver com `AUTO CDC` SCD 1) e regras de qualidade: decididos e registrados na implementação do pipeline `core`.
+  - ✅ duplicatas de pedido: dedup na silver com `AUTO CDC` SCD 1, com desempate pelo ciclo de vida do pedido; regras de qualidade e suas ações (ADR-0008).
 - **Ordem de implementação:** dados sintéticos na landing → bundle + pipeline `core` → pipeline `commercial` → job → dashboard → critérios de pronto (`done-checker`) → entrevista (`interviewer`).
 - **Conceitos de entrevista:** Kimball (fato × dimensão, grão), SCD 1 vs 2, idempotência de carga incremental, MERGE vs append, liquid clustering vs particionamento.
 - **Tema transversal em profundidade:** **qualidade de dados básica** — expectations/testes nas regras óbvias (valores negativos, FKs, duplicatas) + mascaramento de PII.

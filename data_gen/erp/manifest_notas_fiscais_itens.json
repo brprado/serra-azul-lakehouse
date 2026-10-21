@@ -9,5 +9,8 @@
   "caminho": "/Volumes/core/landing/erp/notas_fiscais_itens/2026-10-19",
   "linhas": 3033885,
   "itens_com_divergencia_de_centavos": 90031,
-  "itens_de_devolucao": 25357
+  "itens_de_devolucao": 25357,
+  "itens_com_quantidade_zero_defeito_do_gerador": 16285,
+  "nfs_so_com_itens_de_quantidade_zero": 945,
+  "observacao": "Defeito não planejado, encontrado pela expectation positive_quantity no pipeline core (2026-10-20): no faturamento parcial de item com 2 unidades, a 2ª NF ficou com quantidade 0. Corrigido no gerador depois do commit 9ef90fd; a carga de 2026-10-19 mantém o defeito (ADR-0008)."
 }

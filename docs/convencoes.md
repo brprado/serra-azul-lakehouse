@@ -60,6 +60,14 @@ Domínios: `commercial` (já criado); `supply`, `trade_marketing`, `logistics` e
 - **Fato** pertence ao domínio que produz o evento. Os outros domínios **leem, nunca reconstroem**. Uma métrica que cruza processos pertence ao domínio que precisa dela.
 - **Fatos** guardam, para cada dimensão, a `_key` da versão vigente na data do evento ("como era") e o `_id` durável ("como é hoje"). As chaves são resolvidas no pipeline, nunca no dashboard.
 - **SCD** é escolhido por atributo. O histórico vem da vigência informada pela fonte; correções de qualidade, como grafia, são feitas na silver, antes do cálculo de versões.
+- **"Como é hoje"** usa `is_latest` (última versão, mesmo sem vigência aberta, como no vendedor desligado), não `is_current` (ADR-0008).
+
+## Camadas no pipeline (ADR-0008)
+
+- **Bronze:** streaming table por dataset, Auto Loader, sem regra; só acrescenta `_source_file`, `_extraction_date`, `_ingested_at`. Toda tabela da bronze leva `pipelines.reset.allowed = false`: como a landing guarda só 90 dias, um *full refresh* da bronze perderia histórico.
+- **Silver de fatos:** streaming live view `erp_*_clean` (renomeia, tipa, aplica expectations) → `AUTO CDC ... STORED AS SCD TYPE 1`. Todo `SEQUENCE BY` tem desempate.
+- **Silver de cadastros:** materialized view sobre a última `_extraction_date`; PII validada e descartada aqui.
+- **Expectations:** `FAIL UPDATE` só para quebra de contrato (chave nula); `DROP ROW` para linha inválida conhecida; aviso para medir. Toda regra tem nome e aparece no event log.
 - **Dimensão conformada**: uma por entidade.
   - Mudança aditiva: o dono aprova e avisa os consumidores.
   - Quebra de contrato (renomear/remover coluna, mudar grão ou regra de SCD): o dono e os consumidores aprovam, com versão e prazo de depreciação.

@@ -798,7 +798,10 @@ def build_invoices(ped, items):
     flags = ped.select("num_pedido", "cod_cliente", "regiao", "uf0", "parcial", "faturado1", "faturado2",
                        "cancelado_depois", "devolvido", "dt_fat1", "dt_fat2", "dt_cancela", "dt_devolucao")
     x = items.join(flags, "num_pedido")
-    qty1 = F.when(F.col("parcial") & (F.col("quantidade") >= 2), F.ceil(F.col("quantidade") * 0.6).cast("int")).otherwise(
+    # least(q - 1, ...) garante que a 2ª NF receba ao menos 1 unidade. A carga de 2026-10-19 foi gerada antes
+    # desta correção (commit 9ef90fd) e tem itens com quantidade 0 na 2ª NF quando o pedido tinha 2 unidades (ADR-0008).
+    qty1 = F.when(F.col("parcial") & (F.col("quantidade") >= 2),
+                  F.least(F.col("quantidade") - 1, F.ceil(F.col("quantidade") * 0.6)).cast("int")).otherwise(
         F.col("quantidade"))
     x = x.withColumn("qtd1", qty1)
     seq1 = x.where("faturado1").select("*", F.lit(1).alias("seq"), F.col("qtd1").alias("qtd_nf"))
