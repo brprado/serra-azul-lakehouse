@@ -3,7 +3,7 @@
 CREATE STREAMING LIVE VIEW erp_invoice_header_clean (
   CONSTRAINT invoice_key_not_null EXPECT (invoice_id IS NOT NULL AND invoice_series IS NOT NULL) ON VIOLATION FAIL UPDATE,
   CONSTRAINT known_cfop EXPECT (invoice_type IS NOT NULL),
-  CONSTRAINT return_has_original_invoice EXPECT (invoice_type <> 'RETURN' OR original_invoice_id IS NOT NULL)
+  CONSTRAINT return_has_original_invoice EXPECT (invoice_type IS DISTINCT FROM 'RETURN' OR original_invoice_id IS NOT NULL)
 )
 AS SELECT
   num_nf AS invoice_id,

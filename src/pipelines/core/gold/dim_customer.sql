@@ -1,7 +1,12 @@
 -- Gold: cliente com SCD tipo 2 por atributo (ADR-0006).
 -- Rastreados (geram versão): tipo/canal, segmento, endereço, cidade, UF e região geográfica.
--- Tipo 1 (valor atual em todas as versões): razão social, nome fantasia, tipo de pessoa, validade do documento, status.
+-- Tipo 1 (valor atual em todas as versões): razão social, nome fantasia, tipo de pessoa, validade do documento, status,
+-- data de cadastro.
 -- Versões consecutivas da silver que não mudam nada rastreado (troca de telefone, correção de grafia...) são fundidas.
+-- O valor atual do tipo 1 vem da última versão de cada cliente, mesmo sem vigência aberta (a regra do is_latest,
+-- ADR-0008), e não da versão is_current: com is_current, um cliente cuja última versão foi fechada sumiria da dimensão
+-- com todo o histórico (vendas no -1), e duas versões abertas duplicariam cada customer_key (ADR-0011).
+-- Desempate igual ao da dim_product (ADR-0010 D12).
 CREATE OR REFRESH MATERIALIZED VIEW gold.dim_customer
 COMMENT 'Dimensão conformada de cliente: uma linha por versão rastreada, vigência [valid_from, valid_to), chave determinística + membro -1.'
 AS
@@ -38,7 +43,7 @@ dated AS (
 current_values AS (
   SELECT customer_id, legal_name, trade_name, person_type, is_document_valid, status, registered_date
   FROM silver.erp_customer
-  WHERE is_current
+  QUALIFY row_number() OVER (PARTITION BY customer_id ORDER BY valid_from DESC, valid_to DESC, _source_updated_at DESC) = 1
 )
 SELECT
   xxhash64(d.customer_id, d.valid_from) AS customer_key,

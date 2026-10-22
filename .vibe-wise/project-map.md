@@ -39,7 +39,7 @@ Orquestração: Job `serra_azul_daily` (simulate_erp_extraction → pipeline cor
 ## Data and Trust Boundaries
 - Unity Catalog: 1 metastore (`metastore_aws_us_east_2`); catálogos só via SQL `CREATE CATALOG` (API falha). Storage só gerenciado.
 - PII (CPF/CNPJ, contatos) só na bronze, acesso restrito, tag `pii=true`; silver/gold só com ids pseudônimos.
-- Workspace: https://dbc-5822c68d-e092.cloud.databricks.com (conta de testes, perfil `aws2`).
+- Workspace: Free Edition (conta de testes, perfil `aws2`).
 
 ## Build and Deployment
 - CLI Databricks v1.21.0 (perfis: aws2 = ativo; aws = bloqueado por quota; empresa = NÃO usar). `.claude/settings.json` fixa DATABRICKS_CONFIG_PROFILE=aws2.

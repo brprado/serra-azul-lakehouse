@@ -4,10 +4,15 @@
 --   1. valida o dígito verificador do CNPJ/CPF e guarda só o resultado (o documento não sai da bronze);
 --      dígitos todos iguais (000.000.000-00) passam no módulo 11, mas não são documento real (ADR-0009);
 --   2. troca a cidade digitada pela cidade oficial do CEP (correção de grafia nunca vira versão nova);
---   3. converte a vigência do ERP (intervalo fechado) para [valid_from, valid_to).
+--   3. converte a vigência do ERP (intervalo fechado) para [valid_from, valid_to);
+--   4. mede se as versões são contíguas (o valid_to de uma é o valid_from da seguinte), sem corrigir nem descartar:
+--      sobreposição (a seguinte começa antes) e buraco (começa depois) têm regras de aviso separadas. A dim_customer
+--      recalcula o valid_to pelo início da versão seguinte e esconderia os dois casos (ADR-0006).
 CREATE OR REFRESH MATERIALIZED VIEW silver.erp_customer (
   CONSTRAINT customer_id_not_null EXPECT (customer_id IS NOT NULL) ON VIOLATION FAIL UPDATE,
-  CONSTRAINT valid_interval EXPECT (valid_to > valid_from),
+  CONSTRAINT valid_interval EXPECT (valid_from IS NOT NULL AND valid_to > valid_from),
+  CONSTRAINT no_overlap_with_next_version EXPECT (_next_valid_from IS NULL OR _next_valid_from >= valid_to),
+  CONSTRAINT no_gap_to_next_version EXPECT (_next_valid_from IS NULL OR _next_valid_from <= valid_to),
   CONSTRAINT postal_code_known EXPECT (city IS NOT NULL),
   CONSTRAINT document_valid EXPECT (is_document_valid)
 )
@@ -66,6 +71,11 @@ SELECT
   c.dt_inicio_vigencia AS valid_from,
   coalesce(date_add(c.dt_fim_vigencia, 1), DATE'9999-12-31') AS valid_to,
   c.dt_fim_vigencia IS NULL AS is_current,
+  -- Início da versão seguinte do mesmo cliente (nulo na última). O desempate por fim de vigência (aberta por último)
+  -- faz de duas versões que começam no mesmo dia uma sobreposição. Num empate total de início e fim, a contagem não
+  -- muda, mas a linha marcada pode variar entre execuções (ADR-0010 D11).
+  lead(c.dt_inicio_vigencia) OVER (
+    PARTITION BY c.cod_cliente ORDER BY c.dt_inicio_vigencia, c.dt_fim_vigencia NULLS LAST) AS _next_valid_from,
   c.dt_atualizacao AS _source_updated_at,
   c._extraction_date
 FROM check_digits c

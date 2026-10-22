@@ -1,0 +1,20 @@
+# Pipeline commercial (ADR-0003, ADR-0006, ADR-0010): fatos de vendas e faturamento em commercial.gold.
+# Lê a silver e as dimensões conformadas do core por ${catalog_core}; não reconstrói nada do core (convenções: "lê, nunca reconstrói").
+# Roda depois do core, encadeado pelo job diário (ADR-0005).
+resources:
+  pipelines:
+    commercial:
+      name: commercial
+      catalog: ${var.catalog_commercial}
+      schema: gold
+      serverless: true
+      continuous: false
+      channel: CURRENT
+      configuration:
+        catalog_core: ${var.catalog_core}
+        # Free Edition: uma falha determinística repetida 5 vezes queimaria a cota; 1 nova tentativa basta para falhas transitórias.
+        pipelines.numUpdateRetryAttempts: "1"
+        pipelines.maxFlowRetryAttempts: "1"
+      libraries:
+        - glob:
+            include: ../src/pipelines/commercial/**

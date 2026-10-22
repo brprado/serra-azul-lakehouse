@@ -19,6 +19,7 @@ O agente principal é o Sênior / tech lead: decide com o usuário e te passa de
 | Regra em vigor, resumida em uma página | `docs/convencoes.md` | Resumo; os ADRs mandam. Citar o ADR de origem |
 | Coluna, regra por coluna, sujeira e contagem | `docs/dicionario-de-dados-*.md` | Números vêm do relatório ou dos manifestos |
 | Especificação do negócio (datasets, volumes, requisitos) | `docs/caso-de-negocio.md` | Só quando a especificação muda, com nota "*Incluída em AAAA-MM-DD (ADR-NNNN)*" |
+| Visão consolidada da modelagem (dimensões, fatos e a silver que a gold usa) | `docs/modelagem-do-lakehouse.md` | Atualizar junto com todo ADR que mude dimensão, fato ou regra de silver usada pela gold. Os ADRs mandam |
 
 Não mexa em código (`src/`, `resources/`, `data_gen/`), em `.claude/`, em `.vibe-wise/` nem no `CLAUDE.md`.
 

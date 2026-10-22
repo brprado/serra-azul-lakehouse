@@ -28,7 +28,7 @@ erDiagram
     notas_fiscais ||--o| notas_fiscais : "num_nf_origem (devolução)"
 ```
 
-**Três tabelas são versionadas:** `clientes_pdv`, `produtos` e `hierarquia_comercial` têm uma linha por versão. A ligação com pedidos e NFs é pelo código **e pela data**: vale a versão cuja vigência contém a data do evento.
+**Três tabelas são versionadas:** `clientes_pdv`, `produtos` e `hierarquia_comercial` têm uma linha por versão. A ligação com pedidos e NFs é pelo código **e pela data**: vale a versão cuja vigência contém a data do evento. A data é a do documento que carrega o código: o vendedor está no pedido, então o item de NF usa a data do pedido; o cliente está na NF, então usa a data de emissão (ADR-0010).
 
 **As outras cinco são transacionais ou de referência:** `pedidos_cab`, `pedidos_itens`, `notas_fiscais` e `notas_fiscais_itens` são transacionais; `cep_municipio` é referência. Nenhuma delas é versionada.
 
@@ -52,7 +52,7 @@ Na silver, isso vira o intervalo semiaberto `[valid_from, valid_to)` do ADR-0006
 | `REDE` | Rede varejista | 2 | 26,2% | ~8 pedidos por dia, um por centro de distribuição da rede; preço ~18% abaixo |
 | `PDV` | Venda direta | 39.759 | 18,8% | Um pedido a cada ~4 semanas em média, com poucos itens e poucas caixas; preço cheio |
 
-O **segmento** (`BAR`, `RESTAURANTE`, `MERCADO`, `CONVENIENCIA`, `ADEGA`) é o tipo de estabelecimento do PDV. É ele que muda quando o caso de negócio fala em "mudança de canal". Bares e restaurantes compram mais garrafa retornável e barril; mercados, conveniências e adegas compram mais lata e PET.
+O **segmento** (`BAR`, `RESTAURANTE`, `MERCADO`, `CONVENIENCIA`, `ADEGA`) é o tipo de estabelecimento do PDV. É ele que muda quando o caso de negócio fala em "mudança de canal". No dashboard, porém, "canal" é o `sales_channel` (DIRETO, DISTRIBUIDOR, REDE), derivado do `tipo_cliente`; a mudança de segmento fica no `trade_segment` (ADR-0010). Bares e restaurantes compram mais garrafa retornável e barril; mercados, conveniências e adegas compram mais lata e PET.
 
 ### Regiões: geográfica ≠ comercial
 
@@ -94,7 +94,7 @@ O tipo da NF **não** vem numa coluna própria: vem do **CFOP** (Código Fiscal 
 - **Itu (SP):** o estado de SP, o Sul e o Centro-Oeste.
 - **Contagem (MG):** o restante do Sudeste e o Norte.
 
-Na NF de devolução, os valores vêm **positivos**, como no documento fiscal. O sinal negativo é regra da silver/gold (ADR-0003).
+Na NF de devolução, os valores vêm **positivos**, como no documento fiscal. A silver os mantém positivos; o sinal negativo é aplicado só no `fact_invoice`, uma única vez (ADR-0003, ADR-0010).
 
 ### Preço, desconto e valor
 
@@ -165,7 +165,7 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | Documento com dígito verificador inválido | 735 clientes | Flag `is_document_valid` na silver; o cliente não é descartado |
 | Cidade com grafia diferente da do CEP ("Sta Luzia", "Sao Paulo", "B. Horizonte"…) | 7.264 versões | Cidade substituída pela da referência de CEP, **antes** de calcular versões |
 | Versões que só mudam contato, razão social, status ou grafia | 72.650 versões → 47.166 na `dim_customer` | Fundidas: só atributos rastreados geram versão (ADR-0006) |
-| Clientes que ainda não entraram no cadastro (pedido chega antes) | 227 clientes / 313 pedidos | FK órfã → membro `-1` na gold; corrige quando o cadastro chegar |
+| Clientes que ainda não entraram no cadastro (pedido chega antes) | 227 clientes / 313 pedidos | FK órfã → membro `-1` na gold; corrige quando o cadastro chegar. Nos fatos (2026-10-21): 1.070 itens no `fact_sales` e 1.084 no `fact_invoice`, com `_is_customer_id_known = false` (ADR-0010) |
 
 ### 3.2 `produtos`: cadastro de produtos (versionado)
 
@@ -193,7 +193,7 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | Sujeira | Quantidade | Tratamento previsto |
 |---|---|---|
 | SKU reaproveitado: promoção de verão descontinuada em fev/2026 e SKU reusado em produto novo em mai/2026 | 3 SKUs (`100536`, `100549`, `100551`) | Identidade por `cod_produto`; o SKU vira atributo |
-| EAN duplicado entre produtos diferentes | 2 pares | Registrado (expectation `warn`); não é chave |
+| EAN duplicado entre produtos diferentes | 2 pares | Não é chave: a identidade é o `product_id`. Sem regra de qualidade própria |
 | Descrição alterada (padronização) | 24 produtos | Tipo 1: vale a descrição atual |
 
 **Lançamentos na janela:**
@@ -215,7 +215,7 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | `cod_gerente`, `nome_gerente` | string | Gerente regional (um por região; o do NE foi trocado em 2026-01-01) | `manager_id`, `manager_name` |
 | `regiao_comercial` | string | SUDESTE, SUL, NORDESTE, CENTRO-OESTE, NORTE, CONTAS NACIONAIS | `commercial_region` |
 | `dt_inicio_vigencia`, `dt_fim_vigencia` | date | Vigência (intervalo fechado). Vendedor desligado: a última versão tem fim e não há versão seguinte | `valid_from`, `valid_to` |
-| `dt_registro` | date | Quando a mudança foi **digitada** no ERP; pode ser depois do início da vigência | `_registered_date` |
+| `dt_registro` | date | Quando a mudança foi **digitada** no ERP; pode ser depois do início da vigência | `registered_date`; `is_retroactive` = `dt_registro > dt_inicio_vigencia` (auditoria) |
 | `dt_atualizacao` | timestamp | Gravação da versão | `_source_updated_at` |
 
 **Reorganizações:** a cada virada de trimestre (2025-07-01 … 2026-10-01). Em cada uma, ~45% dos vendedores trocam de supervisor; 1 vendedor é desligado e 1 a 3 são contratados (2 por trimestre no NE, pela expansão).
@@ -226,7 +226,9 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | Vendedores do NE migrados para o SE em 2026-07-01 | 6 | SCD 2: vendas antigas continuam no NE ("como era") |
 | Troca do gerente do NE em 2026-01-01 | todas as versões do NE | Gera nova versão para cada vendedor do NE |
 
-**Caso que o pipeline precisa tratar:** vendedor desligado não tem versão vigente. Na visão "como é hoje", as vendas dele (R$ 6,6 mi em jan–jun/2026) precisam de uma regra, por exemplo "última versão conhecida".
+**Caso tratado pelo pipeline:** vendedor desligado não tem versão vigente.
+- **Visão "como é hoje":** as vendas dele (R$ 6,6 mi em jan–jun/2026) usam a última versão conhecida, marcada com `is_latest` (ADR-0008).
+- **NF emitida depois do desligamento:** o vendedor do item de NF é resolvido na data do pedido, não na da NF. Assim, 255 itens (80 NFs) não caem no `-1` (ADR-0010).
 
 ### 3.4 `cep_municipio`: referência de CEP (fonte `ref`)
 
@@ -322,9 +324,9 @@ Sem sujeira: é a régua usada para limpar o cadastro. Cobre 49 municípios.
 
 | Sujeira | Quantidade | Tratamento previsto |
 |---|---|---|
-| Valor diverge do pedido em ±1 a 3 centavos | 90.031 itens (~3%) | Esperado: o faturamento vale o fiscal; diferença visível na conciliação |
+| Valor diverge do pedido em ±1 a 3 centavos | 90.031 itens (~3%). O gerador marcou o delta sem olhar a quantidade: 476 desses itens têm quantidade 0 e são descartados na silver, que fica com 89.555 | Esperado: o faturamento vale o fiscal; diferença visível na conciliação. No `fact_invoice`, bruto = líquido + desconto (ADR-0010) |
 | Itens de devolução misturados | 25.357 | `invoice_type` pelo CFOP |
-| **Não planejado:** item com quantidade 0 na 2ª NF de um faturamento parcial (defeito do gerador quando o item pedido tinha 2 unidades) | 16.285 itens, 945 NFs só com esses itens | Descartado na silver (`DROP ROW`); gerador corrigido depois desta carga (ADR-0008) |
+| **Não planejado:** item com quantidade 0 na 2ª NF de um faturamento parcial (defeito do gerador quando o item pedido tinha 2 unidades) | 16.285 itens, 945 NFs só com esses itens. 476 deles também receberam o delta de centavos: são os −R$ 0,61 dessas NFs; os outros 15.809 têm líquido 0 | Descartado na silver (`DROP ROW`); gerador corrigido depois desta carga (ADR-0008, conciliação no ADR-0010) |
 
 **Integridade verificada:**
 - todo item de NF aponta para um item de pedido existente;

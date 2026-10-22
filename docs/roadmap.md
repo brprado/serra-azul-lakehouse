@@ -7,7 +7,7 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
 | Etapa | Entregável visível | Status |
 |---|---|---|
 | Fase 0 — Fundação | Esqueleto do lakehouse + convenções | ✅ concluída — ADR-0001/0002, catálogos `core`/`commercial` criados, [convenções](convencoes.md); revisada em 2026-10-19 (ADR-0004/0005) |
-| Fatia 1 — Comercial | Dashboard de vendas por região/marca | 🟨 em andamento — modelagem fechada (ADR-0003, 0006), retenção (ADR-0007), carga inicial do ERP na landing ([dicionário](dicionario-de-dados-erp.md)), pipeline `core` com bronze, silver e dimensões (ADR-0008, 0009); próximo: pipeline `commercial` |
+| Fatia 1 — Comercial | Dashboard de vendas por região/marca | 🟨 em andamento — modelagem fechada (ADR-0003, 0006), retenção (ADR-0007), carga inicial do ERP na landing ([dicionário](dicionario-de-dados-erp.md)), pipeline `core` com bronze, silver e dimensões (ADR-0008, 0009), pipeline `commercial` com os fatos (ADR-0010); próximo: job `serra_azul_daily` (com a prova de idempotência e a tarefa de verificação de unicidade), depois dashboard |
 | Fatia 2 — Supply chain | Cobertura de estoque por CD | ⬜ não iniciada |
 | Fatia 3 — Sell-out | Sell-in vs sell-out | ⬜ não iniciada |
 | Fatia 4 — Logística | OTIF | ⬜ não iniciada |
@@ -45,10 +45,14 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
   - ✅ star schema, fatos e grão: dois fatos no grão do item, pedido e NF (ADR-0003);
   - ✅ surrogate keys ou chaves naturais: as duas — `_key` determinística da versão + `_id` durável (ADR-0006);
   - ✅ SCD tipo 2 na hierarquia comercial, a partir da vigência do ERP (ADR-0006);
-  - ✅ FKs órfãs: membro desconhecido `-1`, corrigido na recomputação (ADR-0006);
+  - ✅ FKs órfãs: membro desconhecido `-1`, corrigido na recomputação (ADR-0006); motivo do `-1` exposto nos fatos (ADR-0010);
   - ✅ PII do cadastro: não sai da bronze (ADR-0004);
   - ✅ retenção da bronze (ADR-0007);
-  - ✅ duplicatas de pedido: dedup na silver com `AUTO CDC` SCD 1, com desempate pelo ciclo de vida do pedido; regras de qualidade e suas ações (ADR-0008).
+  - ✅ duplicatas de pedido: dedup na silver com `AUTO CDC` SCD 1, com desempate pelo ciclo de vida do pedido; regras de qualidade e suas ações (ADR-0008);
+  - ✅ chaves e medidas dos fatos: vendedor do item de NF na data do pedido e cliente na data da NF, sinal das devoluções só no fato, bruto = líquido + desconto, `volume_hl` em `DECIMAL(18,5)` (ADR-0010);
+  - ✅ vigências sobrepostas e buracos nos cadastros: medidos por regras de aviso na silver (ADR-0010);
+  - ✅ toda expectation dá `true` ou `false`, nunca `NULL` (ADR-0010);
+  - ✅ atributos tipo 1 da `dim_customer` pela última versão de cada cliente, e não pela versão aberta, como na `dim_product` (ADR-0011).
 - **Ordem de implementação:** dados sintéticos na landing → bundle + pipeline `core` → pipeline `commercial` → job → dashboard → critérios de pronto (`done-checker`) → entrevista (`interviewer`).
 - **Conceitos de entrevista:** Kimball (fato × dimensão, grão), SCD 1 vs 2, idempotência de carga incremental, MERGE vs append, liquid clustering vs particionamento.
 - **Tema transversal em profundidade:** **qualidade de dados básica** — expectations/testes nas regras óbvias (valores negativos, FKs, duplicatas) + mascaramento de PII.
@@ -62,7 +66,7 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
 - **Pergunta de negócio:** "Qual a cobertura de estoque por CD e SKU? Onde vou romper?" — **Gerente de Supply**.
 - **Fontes:** snapshot diário de estoque (WMS), apontamentos de produção (MES) + demanda média vinda da fatia 1.
 - **Entregável visível:** visão de cobertura de estoque (dias de estoque) por CD × SKU.
-- **Decisões a tomar:** fato de **snapshot** vs fato **transacional** — quando cada um; como tratar dias faltantes do snapshot (gap = zero? repete último? marca como desconhecido?); granularidades diferentes entre produção (por OP) e estoque (por dia); correção do CD que mandou caixas em vez de unidades; estoque negativo — corrigir, rejeitar ou expor?
+- **Decisões a tomar:** fato de **snapshot** vs fato **transacional** — quando cada um; como tratar dias faltantes do snapshot (gap = zero? repete último? marca como desconhecido?); granularidades diferentes entre produção (por OP) e estoque (por dia); correção do CD que mandou caixas em vez de unidades; estoque negativo — corrigir, rejeitar ou expor?; schema técnico para o event log dos pipelines (hoje aparece em `core.bronze` e `commercial.gold`, legível por todo consumidor do catálogo; destino e configuração a verificar; dívida do ADR-0010).
 - **Conceitos de entrevista:** periodic snapshot fact table, semi-aditividade (estoque não soma no tempo!), acumulating snapshot, tratamento de late data em snapshots.
 - **Tema transversal em profundidade:** **observabilidade** — detectar fonte que não chegou (freshness), alertar gap de snapshot, monitorar contagens por dia.
 - **Limitações do Free Edition:** alertas nativos limitados ao warehouse único; sem integrações externas de notificação garantidas.
@@ -88,7 +92,7 @@ Contexto completo em [caso-de-negocio.md](caso-de-negocio.md). Cada fatia atrave
 - **Pergunta de negócio:** "Qual meu OTIF (on time, in full) por CD e transportadora?" — **Supply + Comercial**.
 - **Fontes:** TMS (entregas, devoluções) + fato de pedidos da fatia 1.
 - **Entregável visível:** OTIF por CD/região/mês.
-- **Decisões a tomar:** o join pedido→entrega sustenta a modelagem da fatia 1 ou expõe erro de grão? (teste real da arquitetura); entregas órfãs e timestamps invertidos — regra de negócio ou erro?; skew regional no join (SE = 45% do volume); definição exata de "on time" e "in full" com o negócio (quem define? onde documenta?).
+- **Decisões a tomar:** o join pedido→entrega sustenta a modelagem da fatia 1 ou expõe erro de grão? (teste real da arquitetura); entregas órfãs e timestamps invertidos — regra de negócio ou erro?; skew regional no join (SE = 45% do volume); definição exata de "on time" e "in full" com o negócio (quem define? onde documenta?); liquid clustering em materialized view (suporte a verificar), *skew* das 2 redes (26,2% do volume) na junção com o cliente e refresh incremental dos fatos comerciais (dívidas do ADR-0010).
 - **Conceitos de entrevista:** fact-to-fact join (e por que evitar), conformed dimensions, skew e salting/broadcast, métricas compostas e sua governança (metric views?).
 - **Tema transversal em profundidade:** **performance e custo** — plano de query, liquid clustering nas tabelas grandes, medir antes/depois.
 - **Limitações do Free Edition:** sem controle de cluster, a otimização é toda em layout de dados e SQL; medição de custo limitada às system tables.

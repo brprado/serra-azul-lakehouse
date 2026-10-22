@@ -1,6 +1,6 @@
 # ADR-0008: Construir o pipeline core com bronze fiel, deduplicação por AUTO CDC na silver, cadastros recalculados da última extração e qualidade por expectations
 
-- **Status:** aceito — emendado pelo [ADR-0009](0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md) (validação do documento)
+- **Status:** aceito — emendado pelo [ADR-0009](0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md) (validação do documento) e pelo [ADR-0010](0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) (regras de vigência sobreposta e buraco; regras à prova de nulo, com as de descarte passando a descartar e contar o nulo)
 - **Data:** 2026-10-20
 - **Fatia:** fatia 1 — Comercial
 - **Decisor:** Engenheiro de Dados Sênior (Claude) · **Acompanhamento:** usuário (pode vetar)

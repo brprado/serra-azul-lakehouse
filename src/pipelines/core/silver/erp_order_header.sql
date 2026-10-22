@@ -6,7 +6,7 @@
 CREATE STREAMING LIVE VIEW erp_order_header_clean (
   CONSTRAINT order_id_not_null EXPECT (order_id IS NOT NULL) ON VIOLATION FAIL UPDATE,
   CONSTRAINT order_date_not_null EXPECT (order_date IS NOT NULL) ON VIOLATION DROP ROW,
-  CONSTRAINT known_status EXPECT (order_status IN ('ABERTO', 'PARCIALMENTE FATURADO', 'FATURADO', 'CANCELADO'))
+  CONSTRAINT known_status EXPECT (order_status IS NOT NULL AND order_status IN ('ABERTO', 'PARCIALMENTE FATURADO', 'FATURADO', 'CANCELADO'))
 )
 AS SELECT
   num_pedido AS order_id,

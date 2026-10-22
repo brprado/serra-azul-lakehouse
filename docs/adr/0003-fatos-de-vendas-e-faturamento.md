@@ -1,6 +1,6 @@
 # ADR-0003: Modelar pedido e faturamento como dois fatos transacionais no grão do item
 
-- **Status:** aceito — emendado pelo [ADR-0006](0006-dimensoes-conformadas-identidade-scd-e-chaves.md) (chaves das dimensões, medidas com `volume_hl`, `order_item_number` no `fact_invoice`, fatos como materialized views)
+- **Status:** aceito — emendado pelo [ADR-0006](0006-dimensoes-conformadas-identidade-scd-e-chaves.md) (chaves das dimensões, medidas com `volume_hl`, `order_item_number` no `fact_invoice`, fatos como materialized views) e pelo [ADR-0010](0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) (bruto do `fact_invoice` = líquido + desconto; `invoice_series` no grão do `fact_invoice`; CFOP sem regra fica com medidas nulas, fora da soma "já líquida")
 - **Data:** 2026-10-16
 - **Fatia:** fatia 1 — Comercial
 - **Decisor:** Engenheiro de Dados Sênior · **Revisor:** Staff Engineer

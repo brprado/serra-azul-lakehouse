@@ -1,9 +1,10 @@
 -- Silver: itens de pedido deduplicados por (order_id, order_item_number) (ADR-0008).
 -- Quantidade ou valor negativo é erro de integração (devolução não é pedido negativo: vem por NF):
--- a linha é descartada e a contagem fica nas métricas de qualidade do pipeline.
+-- a linha é descartada e a contagem fica nas métricas de qualidade do pipeline. Quantidade ou valor nulo também:
+-- o coalesce faz a regra dar false, e não NULL, quando falta o valor.
 CREATE STREAMING LIVE VIEW erp_order_item_clean (
   CONSTRAINT order_item_key_not_null EXPECT (order_id IS NOT NULL AND order_item_number IS NOT NULL) ON VIOLATION FAIL UPDATE,
-  CONSTRAINT positive_quantity_and_amount EXPECT (quantity > 0 AND net_amount >= 0) ON VIOLATION DROP ROW
+  CONSTRAINT positive_quantity_and_amount EXPECT (coalesce(quantity > 0 AND net_amount >= 0, false)) ON VIOLATION DROP ROW
 )
 AS SELECT
   num_pedido AS order_id,
