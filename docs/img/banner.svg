@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-labelledby="t">
+  <title id="t">Cervejaria Serra Azul: amanhecer sobre a serra, o lago e as camadas bronze, silver e gold</title>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#081830"/>
+      <stop offset="0.5" stop-color="#173f75"/>
+      <stop offset="0.78" stop-color="#4a77b6"/>
+      <stop offset="1" stop-color="#e9b465"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="890" cy="240" r="320" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffcf7a" stop-opacity="0.7"/>
+      <stop offset="0.45" stop-color="#ffb85c" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffb85c" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lake" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b467f"/>
+      <stop offset="1" stop-color="#0c2142"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c8921a"/>
+      <stop offset="0.5" stop-color="#ecc04a"/>
+      <stop offset="1" stop-color="#c8921a"/>
+    </linearGradient>
+    <linearGradient id="silver" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8e99a8"/>
+      <stop offset="0.5" stop-color="#c9d1dc"/>
+      <stop offset="1" stop-color="#8e99a8"/>
+    </linearGradient>
+    <linearGradient id="bronze" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7f4519"/>
+      <stop offset="0.5" stop-color="#b8743a"/>
+      <stop offset="1" stop-color="#7f4519"/>
+    </linearGradient>
+  </defs>
+
+  <!-- céu e amanhecer -->
+  <rect width="1280" height="420" fill="url(#sky)"/>
+  <rect width="1280" height="420" fill="url(#glow)"/>
+  <g fill="#ffffff">
+    <circle cx="742" cy="38" r="1.3" opacity="0.6"/>
+    <circle cx="815" cy="84" r="1" opacity="0.5"/>
+    <circle cx="884" cy="30" r="1.5" opacity="0.7"/>
+    <circle cx="968" cy="64" r="1" opacity="0.5"/>
+    <circle cx="1034" cy="24" r="1.2" opacity="0.6"/>
+    <circle cx="1101" cy="72" r="1.6" opacity="0.7"/>
+    <circle cx="1166" cy="34" r="1" opacity="0.5"/>
+    <circle cx="1232" cy="96" r="1.3" opacity="0.6"/>
+    <circle cx="1196" cy="140" r="0.9" opacity="0.4"/>
+    <circle cx="1060" cy="118" r="0.9" opacity="0.4"/>
+    <circle cx="640" cy="22" r="1" opacity="0.5"/>
+  </g>
+  <circle cx="890" cy="228" r="42" fill="#ffd98f"/>
+
+  <!-- a serra, em três planos -->
+  <path d="M0 300 L120 284 L210 292 L330 268 L430 282 L540 262 L640 270 L760 200 L850 235 L930 210 L1030 150 L1120 200 L1200 172 L1280 205 L1280 345 L0 345 Z"
+        fill="#5683c2" stroke="#9cc0ee" stroke-opacity="0.45" stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M0 318 L90 306 L200 316 L300 294 L420 307 L520 286 L610 302 L720 262 L820 292 L900 268 L990 236 L1080 272 L1170 248 L1280 270 L1280 345 L0 345 Z"
+        fill="#2d5c9c" stroke="#6f9bd6" stroke-opacity="0.35" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M0 334 L140 321 L260 332 L380 313 L500 328 L640 306 L760 326 L880 300 L1000 322 L1120 298 L1280 318 L1280 345 L0 345 Z"
+        fill="#173a6b"/>
+
+  <!-- o lago (data lake) com o reflexo do sol -->
+  <rect y="338" width="1280" height="36" fill="url(#lake)"/>
+  <g stroke="#ffd98f" stroke-linecap="round">
+    <line x1="850" y1="344" x2="930" y2="344" stroke-width="2.4" opacity="0.8"/>
+    <line x1="862" y1="351" x2="918" y2="351" stroke-width="2" opacity="0.6"/>
+    <line x1="872" y1="358" x2="908" y2="358" stroke-width="1.8" opacity="0.45"/>
+    <line x1="880" y1="365" x2="900" y2="365" stroke-width="1.5" opacity="0.3"/>
+  </g>
+  <g stroke="#9cc0ee" stroke-linecap="round" stroke-width="1" opacity="0.35">
+    <line x1="120" y1="350" x2="170" y2="350"/>
+    <line x1="300" y1="360" x2="340" y2="360"/>
+    <line x1="520" y1="347" x2="580" y2="347"/>
+    <line x1="1080" y1="356" x2="1130" y2="356"/>
+    <line x1="1190" y1="364" x2="1220" y2="364"/>
+  </g>
+
+  <!-- as camadas do medallion, como estratos sob o lago -->
+  <path d="M0 374 Q320 370 640 374 T1280 374 L1280 390 L0 390 Z" fill="url(#gold)"/>
+  <path d="M0 390 Q320 386 640 390 T1280 390 L1280 406 L0 406 Z" fill="url(#silver)"/>
+  <path d="M0 406 Q320 402 640 406 T1280 406 L1280 420 L0 420 Z" fill="url(#bronze)"/>
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" font-weight="700"
+     letter-spacing="3" text-anchor="end">
+    <text x="1256" y="386" fill="#5a3f05" fill-opacity="0.75">GOLD</text>
+    <text x="1256" y="402" fill="#2b3340" fill-opacity="0.7">SILVER</text>
+    <text x="1256" y="417" fill="#ffe6cc" fill-opacity="0.8">BRONZE</text>
+  </g>
+
+  <!-- título -->
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="64" y="92" font-size="13" font-weight="600" letter-spacing="3" fill="#f0b866">PROJETO DE ESTUDOS · ENGENHARIA DE DADOS</text>
+    <text x="62" y="150" font-size="60" font-weight="700" fill="#ffffff">Cervejaria Serra Azul</text>
+    <text x="64" y="190" font-size="22" fill="#d3e3f7">Lakehouse greenfield no Databricks, do ERP ao dashboard</text>
+    <text x="64" y="226" font-size="15" letter-spacing="0.5" fill="#9dbbe2">Medallion · Lakeflow SDP · Unity Catalog · SCD 2 · Asset Bundles</text>
+  </g>
+</svg>

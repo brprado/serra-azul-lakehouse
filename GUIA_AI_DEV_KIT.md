@@ -48,7 +48,7 @@ O que o ai-dev-kit acrescenta sobre isso é a conveniência (perfis prontos, det
 |---|---|
 | Escopo | **Projeto** (só vale ao abrir o Claude Code nesta pasta) |
 | Pasta do projeto | `~/Documents/DataEngineering Projects/Databricks Project (AI Dev Kit test)` |
-| Perfil Databricks | `aws` (Free Edition, `dbc-6dc80a99-8c95.cloud.databricks.com`) |
+| Perfil Databricks | `aws` (Free Edition) |
 | Perfil de skills | `data-engineer` (15 skills: 4 core + 11 de engenharia de dados) |
 | Skills em | `.claude/skills/` |
 | Estado da instalação | `.ai-dev-kit/skills.lock` e `.databricks/aitools/` |

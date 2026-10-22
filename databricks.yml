@@ -16,6 +16,7 @@ sync:
     - notebooks/**
     - setup/**
     - GUIA_AI_DEV_KIT.md
+    - README.md
     - notes.md
 
 variables:
