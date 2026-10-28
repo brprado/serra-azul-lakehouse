@@ -1,6 +1,6 @@
 # ADR-0011: Montar os atributos tipo 1 da dim_customer pela última versão de cada cliente, e não pela versão aberta
 
-- **Status:** aceito (2026-10-22, depois da revisão do `adr-reviewer` e da conferência pós-refresh)
+- **Status:** aceito (2026-10-22, depois da revisão do `adr-reviewer` e da conferência pós-refresh) — emendado pelo [ADR-0012](0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) (D6: "prevenir ou só detectar" resolvido pelos dois, com uma linha por cliente e início antes do cálculo de versões e a verificação de unicidade no job; o tipo 1 passa a ter ordenação total e sai da mesma linha que o `is_latest`; o nome da `dim_sales_rep` segue a mesma regra)
 - **Data:** 2026-10-22
 - **Fatia:** fatia 1 — Comercial
 - **Decisor:** Engenheiro de Dados Sênior (Claude) · **Acompanhamento:** usuário (pode vetar)

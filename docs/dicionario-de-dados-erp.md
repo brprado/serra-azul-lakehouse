@@ -1,15 +1,18 @@
-# Dicionário de dados — ERP (carga inicial sintética)
+# Dicionário de dados — ERP (carga inicial e extração diária sintéticas)
 
-Dados que chegam na **landing** para a fatia 1, como o ERP da Serra Azul os entregaria no go-live. É a "matéria-prima" da bronze: nomes em português, como a fonte manda (a tradução para inglês acontece na silver, ADR-0004).
+Dados que chegam na **landing** para a fatia 1, como o ERP da Serra Azul os entregaria no go-live e depois dele, na extração diária (§5). É a "matéria-prima" da bronze: nomes em português, como a fonte manda (a tradução para inglês acontece na silver, ADR-0004).
+
+As seções 1 a 4 descrevem a **carga inicial**; as contagens delas são as da carga. A **extração diária** está na §5.
 
 | Item | Valor |
 |---|---|
-| Período coberto | 2025-04-19 a 2026-10-18 (18 meses, até D-1) |
-| Data da extração | 2026-10-19 (pasta de cada dataset) |
-| Formato | Parquet, em `/Volumes/core/landing/erp/<dataset>/2026-10-19/` e `/Volumes/core/landing/ref/cep_municipio/2026-10-19/` |
-| Gerador | [`data_gen/erp/erp_initial_load.py`](../data_gen/erp/erp_initial_load.py), job `erp_initial_load` do bundle |
-| Gabaritos | `data_gen/erp/manifest_<dataset>.json`: contagem exata de cada sujeira injetada |
-| Reprodutível? | Sim. Toda aleatoriedade vem de hash da chave + semente `20261019`; rodar de novo gera os mesmos arquivos |
+| Período coberto pela carga inicial | 2025-04-19 a 2026-10-18 (18 meses, até D-1) |
+| Data da extração da carga inicial | 2026-10-19 (pasta de cada dataset) |
+| Formato | Parquet, em `/Volumes/core/landing/erp/<dataset>/<AAAA-MM-DD>/` e `/Volumes/core/landing/ref/cep_municipio/2026-10-19/` |
+| Gerador da carga inicial | [`data_gen/erp/erp_initial_load.py`](../data_gen/erp/erp_initial_load.py), job `erp_initial_load` do bundle. **Não rodar de novo na landing real** (ADR-0012 D4) |
+| Extração diária | Desde 2026-10-20, uma por dia: [`data_gen/erp/erp_daily_extraction.py`](../data_gen/erp/erp_daily_extraction.py), tarefa `simulate_erp_extraction` do job `serra_azul_daily` (§5, ADR-0012) |
+| Gabaritos | `data_gen/erp/manifest_<dataset>.json`: contagem exata de cada sujeira injetada na carga inicial |
+| Reprodutível? | Sim. Toda aleatoriedade vem de hash da chave + semente `20261019`, e o Faker tem versão fixa (`faker==37.12.0`). Rodar de novo gera o mesmo conteúdo; cada extração diária é função só da sua data |
 
 ---
 
@@ -165,7 +168,7 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | Documento com dígito verificador inválido | 735 clientes | Flag `is_document_valid` na silver; o cliente não é descartado |
 | Cidade com grafia diferente da do CEP ("Sta Luzia", "Sao Paulo", "B. Horizonte"…) | 7.264 versões | Cidade substituída pela da referência de CEP, **antes** de calcular versões |
 | Versões que só mudam contato, razão social, status ou grafia | 72.650 versões → 47.166 na `dim_customer` | Fundidas: só atributos rastreados geram versão (ADR-0006) |
-| Clientes que ainda não entraram no cadastro (pedido chega antes) | 227 clientes / 313 pedidos | FK órfã → membro `-1` na gold; corrige quando o cadastro chegar. Nos fatos (2026-10-21): 1.070 itens no `fact_sales` e 1.084 no `fact_invoice`, com `_is_customer_id_known = false` (ADR-0010) |
+| Clientes que ainda não entraram no cadastro (pedido chega antes) | 227 clientes / 313 pedidos | FK órfã → membro `-1` na gold; corrige quando o cadastro chegar. O cadastro deles chega nas extrações diárias de 2026-10-20 a 2026-10-29 (§5). Nos fatos, com `_is_customer_id_known = false`: em 2026-10-21, 1.070 itens no `fact_sales` e 1.084 no `fact_invoice` (ADR-0010); em 2026-10-27, depois de 8 extrações diárias, 254 e 256 (ADR-0012) |
 
 ### 3.2 `produtos`: cadastro de produtos (versionado)
 
@@ -326,7 +329,7 @@ Sem sujeira: é a régua usada para limpar o cadastro. Cobre 49 municípios.
 |---|---|---|
 | Valor diverge do pedido em ±1 a 3 centavos | 90.031 itens (~3%). O gerador marcou o delta sem olhar a quantidade: 476 desses itens têm quantidade 0 e são descartados na silver, que fica com 89.555 | Esperado: o faturamento vale o fiscal; diferença visível na conciliação. No `fact_invoice`, bruto = líquido + desconto (ADR-0010) |
 | Itens de devolução misturados | 25.357 | `invoice_type` pelo CFOP |
-| **Não planejado:** item com quantidade 0 na 2ª NF de um faturamento parcial (defeito do gerador quando o item pedido tinha 2 unidades) | 16.285 itens, 945 NFs só com esses itens. 476 deles também receberam o delta de centavos: são os −R$ 0,61 dessas NFs; os outros 15.809 têm líquido 0 | Descartado na silver (`DROP ROW`); gerador corrigido depois desta carga (ADR-0008, conciliação no ADR-0010) |
+| **Não planejado:** item com quantidade 0 na 2ª NF de um faturamento parcial (defeito do gerador quando o item pedido tinha 2 unidades) | 16.285 itens, 945 NFs só com esses itens. 476 deles também receberam o delta de centavos: são os −R$ 0,61 dessas NFs; os outros 15.809 têm líquido 0 | Descartado na silver (`DROP ROW`); gerador corrigido depois desta carga (ADR-0008, conciliação no ADR-0010). A correção vale só para pedidos cuja 1ª NF sai depois de 2026-10-18: as extrações diárias de 2026-10-20 a 2026-10-22 trazem mais 71 itens assim, a 2ª NF dos pedidos parciais da carga (§5, ADR-0012 D10) |
 
 **Integridade verificada:**
 - todo item de NF aponta para um item de pedido existente;
@@ -355,11 +358,98 @@ Sem sujeira: é a régua usada para limpar o cadastro. Cobre 49 municípios.
 
 ---
 
-## 5. Glossário
+## 5. Extração diária (desde 2026-10-20)
+
+Depois do go-live, o job `serra_azul_daily` faz o papel do ERP. A tarefa `simulate_erp_extraction` grava na landing uma extração por dia ([ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md)). A extração da data **E** traz o que mudou no dia **D = E − 1**.
+
+### 5.1 O que cada extração traz
+
+| Dataset | Extração | Conteúdo da extração E |
+|---|---|---|
+| `pedidos_cab` | incremental | Pedidos criados em D e cabeçalhos cujo status mudou em D (faturamento, cancelamento), com o status vigente em D |
+| `pedidos_itens` | incremental | Itens dos pedidos criados em D. Itens não mudam depois |
+| `notas_fiscais` | incremental | NFs emitidas em D: venda, 2ª NF do faturamento parcial e devolução |
+| `notas_fiscais_itens` | incremental | Itens dessas NFs |
+| `clientes_pdv` | full | Todas as versões conhecidas em E, com o histórico inteiro |
+| `produtos` | full | Todas as versões, com o histórico inteiro |
+| `hierarquia_comercial` | full | Todas as versões, com o histórico inteiro |
+| `cep_municipio` | — | Não é reenviado: carga única |
+
+- **Mesmo mundo da carga inicial:** as fórmulas são as mesmas (o simulador importa o gerador da carga), e a numeração continua sem buraco: pedidos a partir de `PV00805154`, NFs a partir de `100838958`.
+- **Determinística:** o conteúdo de cada extração é função só da sua data.
+
+### 5.2 Arquivos
+
+- **Caminho:** `/Volumes/core/landing/erp/<dataset>/<E>/<dataset>.parquet`, um arquivo por dataset e por data.
+- **Reenvio:** `<dataset>_reenvio.parquet`, na mesma pasta e com o mesmo conteúdo (parâmetro `resend=true`). Simula o reenvio de integração do ERP. Existe para a extração de 2026-10-27 (prova de idempotência). O sufixo é fixo por data: o próximo reenvio de teste precisa ser de outra data.
+- **Nenhum arquivo é sobrescrito ou regravado,** salvo para o direito ao esquecimento (LGPD). A carga inicial (2026-10-19) continua nos arquivos `part-<uuid>` em que foi gravada.
+- **PII:** cada extração de `clientes_pdv` traz a PII de todos os clientes. Por isso a landing e a bronze guardam uma cópia da PII por dia até a retenção do ADR-0007 ganhar rotina (ADR-0012).
+- **Catch-up:** o simulador grava todas as extrações que faltam até a data alvo. A primeira execução, em 2026-10-27, gravou 8 de uma vez (2026-10-20 a 2026-10-27).
+
+### 5.3 Linhas por extração
+
+| Extração (E) | Dados de (D) | `pedidos_cab` | `pedidos_itens` | `notas_fiscais` | `notas_fiscais_itens` | `clientes_pdv` | `produtos` | `hierarquia_comercial` |
+|---|---|---|---|---|---|---|---|---|
+| 2026-10-20 | 2026-10-19 (seg) | 2.713 | 8.888 | 1.203 | 4.288 | 72.698 | 126 | 505 |
+| 2026-10-21 | 2026-10-20 (ter) | 3.585 | 8.663 | 2.058 | 7.559 | 72.732 | 126 | 505 |
+| 2026-10-22 | 2026-10-21 (qua) | 4.003 | 8.609 | 2.447 | 9.038 | 72.767 | 126 | 505 |
+| 2026-10-23 | 2026-10-22 (qui) | 3.981 | 8.672 | 2.492 | 8.887 | 72.801 | 126 | 505 |
+| 2026-10-24 | 2026-10-23 (sex) | 4.149 | 9.423 | 2.487 | 8.836 | 72.845 | 126 | 505 |
+| 2026-10-25 | 2026-10-24 (sáb) | 2.385 | 2.571 | 1.887 | 6.823 | 72.887 | 126 | 505 |
+| 2026-10-26 | 2026-10-25 (dom) | 893 | 165 | 854 | 2.978 | 72.932 | 126 | 505 |
+| 2026-10-27 | 2026-10-26 (seg) | 2.760 | 9.012 | 1.239 | 4.295 | 72.976 | 126 | 505 |
+| **Total** | | **24.469** | **56.003** | **14.667** | **52.704** | **582.638** | **1.008** | **4.040** |
+
+- **Reenvio de 2026-10-27:** as mesmas contagens da linha de 2026-10-27, 90.913 linhas nos 7 datasets.
+- **Sábado fraco e domingo quase zero**, como na carga (§2): o dia de pedido mais fraco é o domingo, 2026-10-25 (165 itens).
+- **A bronze cresceu exatamente o total** de cada coluna na primeira execução (ADR-0012, Resultados).
+
+### 5.4 Clientes fora da carga
+
+- Os 227 clientes da FK órfã (§3.1) chegam no cadastro numa extração entre 2026-10-20 e 2026-10-29, sorteada pela chave do cliente: `go_live + 1 + floor(u("chegada_cadastro") × 10)` dias.
+- Na extração de 2026-10-27, `clientes_pdv` tinha 39.962 clientes, contra 39.773 na carga: **189 dos 227** já tinham chegado. Os 38 restantes chegam até 2026-10-29.
+- Em versões, a extração passa de 72.650 (carga) para 72.976 (2026-10-27): 326 versões dos clientes que já chegaram.
+- No ensaio de 2026-10-27, 113 clientes tinham chegado até 2026-10-24, e nenhum cliente da carga sumiu.
+- **Nos fatos, em 2026-10-27:** 254 itens no `fact_sales` e 256 no `fact_invoice` continuam com cliente `-1` e `_is_customer_id_known = false`, todos por cliente ainda não cadastrado. Eram 1.070 e 1.084 antes da extração diária.
+
+### 5.5 Sujeiras
+
+| Sujeira | Na extração diária | Tratamento |
+|---|---|---|
+| Duplicata exata, quase-duplicata, item negativo, centavos | Mesmo sorteio da carga, pela chave do registro. No ensaio de 2026-10-27: duplicata exata 1,55% a 2,04%; quase-duplicata ~0,3%; item negativo ~0,1%; centavos ~3%. Nas 8 extrações reais: 52 itens de pedido negativos | Os mesmos da carga (§3). Os 52 negativos foram descartados por `positive_quantity_and_amount` (event log de 2026-10-27) |
+| Item de NF com quantidade 0 (2ª NF do faturamento parcial) | 71 itens (54 pedidos, todos de venda), nas extrações de 2026-10-20 a 2026-10-22. São a 2ª NF dos pedidos parciais cuja 1ª NF já estava na carga, com as 2 unidades. Depois de 2026-10-22, nenhum | Descartado na silver (`positive_quantity`, `DROP ROW`): 71 descartados no event log de 2026-10-27. A regra corrigida do gerador vale só para pedidos cuja 1ª NF sai depois de 2026-10-18 (ADR-0012 D10) |
+| Reenvio da extração inteira (`_reenvio`) | Só quando o job roda com `resend=true` | Silver de fatos: `AUTO CDC`. Silver de cadastros: linhas idênticas juntadas (`GROUP BY ALL`, ADR-0012 D5) |
+
+### 5.6 Simplificações do simulador (ADR-0012)
+
+- **Cadastros parados depois do go-live:** nenhuma versão nova, nenhum cliente novo e nenhuma reorganização da hierarquia (a estrutura fica a de 2026-10-01). O único cadastro que chega é o dos 227 órfãos, até 2026-10-29.
+- **Produtos:** o sorteio de produtos de cada mês depois do horizonte repete o último mês, sem lançamento nem descontinuação.
+- **Tendência de crescimento:** depois de 2026-10-18, continua a reta do horizonte.
+- **Calendário:** feriados, Natal e Carnaval até o fim de 2027. Depois disso, nenhum feriado.
+
+### 5.7 Verificações (ensaio de 2026-10-27)
+
+A extração de 2026-10-19 regerada pelo simulador foi comparada linha a linha (`EXCEPT ALL` nos dois sentidos) com o **recorte do dia 2026-10-18** da carga inicial, ou seja, o que uma extração diária de 2026-10-19 traria:
+- `pedidos_cab`: pedidos cuja última `dt_atualizacao` é de 2026-10-18;
+- `pedidos_itens`: itens dos pedidos **criados** (`dt_pedido`) em 2026-10-18;
+- `notas_fiscais` e `notas_fiscais_itens`: NFs com `dt_emissao` = 2026-10-18, e os itens dessas NFs;
+- cadastros: a extração full inteira.
+
+| Verificação | Resultado |
+|---|---|
+| Extração de 2026-10-19 regerada pelo simulador × recorte do dia 2026-10-18 da carga | 0 diferenças nos 7 datasets |
+| Quantidade faturada maior que a pedida | 0 entre 2.913.332 itens de pedido com NF de venda (carga + ensaio) |
+| Numeração | Sem buraco: pedidos 805154 a 817326; NFs 100838958 a 100849644 |
+
+---
+
+## 6. Glossário
 
 | Termo | Significado |
 |---|---|
 | **Carga inicial / dump** | Primeira extração, com todo o histórico; depois vêm as incrementais diárias |
+| **Catch-up** | O simulador grava, numa execução, todas as extrações que faltam desde a última (por exemplo, depois de dias sem rodar o job) |
+| **Reenvio** | A mesma extração entregue de novo pela integração, num arquivo com outro nome |
 | **Extração full** | A tabela inteira a cada entrega (cadastros) |
 | **Extração incremental** | Só o que foi criado ou alterado desde a última entrega (pedidos, NFs) |
 | **SKU** | *Stock keeping unit*: o código comercial de uma combinação marca × líquido × embalagem × pack |

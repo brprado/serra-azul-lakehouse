@@ -41,7 +41,8 @@ flowchart LR
 ```
 
 - **Medallion organizado por fonte e por domínio.** Até a silver, os dados ficam no catálogo `core`, alinhados à fonte: cada fonte é ingerida uma vez. Da gold em diante, cada domínio (`commercial`, depois `supply`, `logistics`...) tem o seu catálogo, e as dimensões conformadas ficam em `core.gold`, com uma definição por entidade.
-- **Lakeflow Spark Declarative Pipelines em SQL**, com dois pipelines (`core` e `commercial`) que rodam em série. Um job (`serra_azul_daily`, a entregar) garante a ordem.
+- **Lakeflow Spark Declarative Pipelines em SQL**, com dois pipelines (`core` e `commercial`) que rodam em série. O job `serra_azul_daily` garante a ordem: um simulador grava na landing a extração diária do ERP, os dois pipelines rodam, e uma verificação final, depois da publicação, falha o job se algum fato, dimensão ou cadastro duplicou.
+- **Idempotência provada, com um achado no caminho:** a recarga do mesmo dia não muda nenhuma linha. O primeiro teste de reenvio da extração dobrou a silver de cadastros; corrigida a consulta, o reenvio passou a ser absorvido, com silver e gold idênticas por checksum (ADR-0012).
 - **Tudo como código.** Os pipelines e os jobs ficam num *bundle* (Declarative Automation Bundles, os antigos Databricks Asset Bundles). Catálogos e schemas são criados por SQL em `setup/`, porque no Free Edition a API não cria catálogos.
 - **Somente batch e serverless**, com uma execução por dia para caber na *fair usage quota* do Free Edition.
 
@@ -63,7 +64,7 @@ erDiagram
 
 | Decisão | Por quê |
 |---|---|
-| **Dois fatos**: `fact_sales` (pedido, 2.931.839 itens) e `fact_invoice` (nota fiscal, 3.017.600 itens) | Pedido e faturamento são processos diferentes, com datas e regras diferentes. Devoluções entram na NF com sinal negativo, aplicado só no fato |
+| **Dois fatos**: `fact_sales` (pedido, 2.931.839 itens na carga inicial) e `fact_invoice` (nota fiscal, 3.017.600 itens na carga inicial) | Pedido e faturamento são processos diferentes, com datas e regras diferentes. Devoluções entram na NF com sinal negativo, aplicado só no fato |
 | **SCD por atributo** em cliente e vendedor | Canal, segmento, endereço e região mudam a análise "como era" (SCD 2). Razão social e status são lidos "como são hoje" (tipo 1). As versões da fonte que não mudam nada rastreado são fundidas (*gaps and islands*): 72.650 versões viram 47.166 |
 | **Duas chaves no fato** | A `_key` da versão vigente na data do documento ("como era") e o `_id` durável com `is_latest` ("como é hoje"), o tipo 7 de Kimball |
 | **Chaves substitutas determinísticas** (`xxhash64`) | São recalculadas a cada execução sem tabela de controle, e a mesma entrada gera sempre a mesma chave |
@@ -101,6 +102,7 @@ Uma lição registrada no ADR-0010: toda *expectation* precisa dar `true` ou `fa
 | [0009](docs/adr/0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md) | Documento com dígitos todos iguais é inválido; CNPJ alfanumérico adiado |
 | [0010](docs/adr/0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) | Pipeline `commercial`: chaves pela data do documento e motivo do membro desconhecido |
 | [0011](docs/adr/0011-dim-customer-tipo-1-pela-ultima-versao.md) | Atributos tipo 1 do cliente pela última versão, e não pela versão aberta |
+| [0012](docs/adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) | Job diário: extração simulada e determinística do ERP, landing sem sobrescrita, idempotência provada e verificação de unicidade |
 
 Um ADR aceito não é reescrito: uma mudança entra por um ADR novo, que emenda ou substitui o antigo. Cada ADR responde "e em produção, faríamos diferente?" e "qual o custo com 10x e 100x o volume?". As regras em vigor estão resumidas numa página de [convenções](docs/convencoes.md).
 
@@ -125,11 +127,13 @@ Um *hook* ([`databricks_guard.py`](.claude/hooks/databricks_guard.py)) impede os
 
 ```
 ├── databricks.yml              # bundle: variáveis de catálogo e target
-├── resources/                  # pipelines core e commercial, job de carga inicial
-├── src/pipelines/
-│   ├── core/{bronze,silver,gold}/   # SQL do pipeline core
-│   └── commercial/gold/             # SQL dos fatos
-├── data_gen/erp/               # gerador da carga sintética do ERP e manifestos
+├── resources/                  # pipelines core e commercial, job de carga inicial, job diário
+├── src/
+│   ├── pipelines/
+│   │   ├── core/{bronze,silver,gold}/   # SQL do pipeline core
+│   │   └── commercial/gold/             # SQL dos fatos
+│   └── jobs/                   # verificação de unicidade do job diário
+├── data_gen/erp/               # carga inicial sintética do ERP, simulador da extração diária e manifestos
 ├── setup/                      # criação de catálogos, schemas e volumes
 ├── docs/
 │   ├── adr/                    # decisões de arquitetura
@@ -151,18 +155,26 @@ Pré-requisitos: um workspace do Databricks Free Edition e o Databricks CLI aute
    databricks bundle validate
    databricks bundle deploy
    ```
-3. Gere a carga inicial sintética do ERP na landing (18 meses de história):
+3. Gere a carga inicial sintética do ERP na landing (18 meses de história). **Uma vez só:** rodar de novo na mesma landing faria a bronze ler a carga inteira outra vez (ADR-0012):
    ```bash
    databricks bundle run erp_initial_load
    ```
-4. Valide os pipelines sem processar dados e depois rode-os em série:
+4. Valide o pipeline `core` sem processar dados:
    ```bash
    databricks bundle run core --validate-only
-   databricks bundle run core
-   databricks bundle run commercial
+   ```
+5. Rode o job diário: extração simulada do ERP → `core` → `commercial` → verificação de unicidade. Sem parâmetros, ele grava todas as extrações que faltam, da última na landing até hoje. Se a carga inicial ficou para trás há muitos dias, isso pode ser muita coisa para uma execução: o simulador tem timeout de 30 min. Para avançar aos poucos, passe uma `extraction_date` próxima da última extração. É o trade-off do ADR-0012: cada execução recalcula a janela do simulador, então avançar aos poucos custa mais no total e menos por execução.
+   ```bash
+   databricks bundle run serra_azul_daily
+   ```
+   Para recarregar um dia já gravado, sem gerar o seguinte, passe a data da extração:
+   ```bash
+   databricks bundle run serra_azul_daily --params extraction_date=2026-10-27
    ```
 
-A carga inicial e a primeira execução dos pipelines consomem uma parte relevante da cota diária do Free Edition. Rode uma vez por dia.
+   **Se o simulador estourar o tempo, apague a extração incompleta antes de rodar de novo:** são os arquivos da extração seguinte à última que o simulador imprimiu no log, em todos os datasets. O `core` nunca os leu (ADR-0012).
+
+A carga inicial e cada execução do job consomem uma parte relevante da cota diária do Free Edition. Rode uma vez por dia. O agendamento do job (05:00 de Brasília) fica pausado.
 
 ## Limitações do Free Edition que moldaram o projeto
 

@@ -3,6 +3,8 @@
 -- Vigência contígua (o valid_to de uma versão é o valid_from da seguinte) só é medida, por duas regras de aviso:
 -- sobreposição e buraco. A dim_product fica com a última versão de cada produto (ADR-0010 D12), então duas versões
 -- abertas não duplicam os fatos; a regra mostra que a fonte mandou um histórico incoerente.
+-- Reenvio da mesma extração (o mesmo arquivo com outro nome): linhas idênticas em todas as colunas de negócio viram
+-- uma (ADR-0012), como em silver.erp_customer.
 CREATE OR REFRESH MATERIALIZED VIEW silver.erp_product (
   CONSTRAINT product_id_not_null EXPECT (product_id IS NOT NULL) ON VIOLATION FAIL UPDATE,
   CONSTRAINT valid_interval EXPECT (valid_from IS NOT NULL AND valid_to > valid_from),
@@ -34,5 +36,10 @@ AS SELECT
     PARTITION BY cod_produto ORDER BY dt_inicio_vigencia, dt_fim_vigencia NULLS LAST) AS _next_valid_from,
   dt_atualizacao AS _source_updated_at,
   _extraction_date
-FROM bronze.erp_product
-WHERE _extraction_date = (SELECT max(_extraction_date) FROM bronze.erp_product);
+FROM (
+  -- GROUP BY ALL, e não DISTINCT: ver silver.erp_customer.
+  SELECT * EXCEPT (_source_file, _ingested_at)
+  FROM bronze.erp_product
+  WHERE _extraction_date = (SELECT max(_extraction_date) FROM bronze.erp_product)
+  GROUP BY ALL
+);

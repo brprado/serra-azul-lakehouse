@@ -1,7 +1,8 @@
 -- Silver: itens de NF deduplicados (ADR-0008). Cada item aponta para o item de pedido faturado
 -- (order_id + order_item_number), o que permite conciliar faturamento parcial e devoluções item a item.
 -- Item de NF com quantidade nula ou <= 0 é inválido pela regra fiscal: descartado, com contagem nas métricas.
--- (A carga inicial de 2026-10-19 tem 16.285 itens assim, por um defeito do gerador no faturamento parcial; ADR-0008.)
+-- (A carga inicial de 2026-10-19 tem 16.285 itens assim, por um defeito do gerador no faturamento parcial; ADR-0008.
+-- As extrações diárias trazem os últimos: a 2ª NF dos pedidos parciais cuja 1ª NF saiu até 2026-10-18; ADR-0012.)
 CREATE STREAMING LIVE VIEW erp_invoice_item_clean (
   CONSTRAINT invoice_item_key_not_null EXPECT (invoice_id IS NOT NULL AND invoice_series IS NOT NULL AND invoice_item_number IS NOT NULL) ON VIOLATION FAIL UPDATE,
   CONSTRAINT known_cfop EXPECT (invoice_type IS NOT NULL),

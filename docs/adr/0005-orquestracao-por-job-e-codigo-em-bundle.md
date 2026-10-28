@@ -1,6 +1,6 @@
 # ADR-0005: Orquestrar os pipelines por um Job e versionar tudo em Git com um bundle
 
-- **Status:** aceito — emendado pelo [ADR-0010](0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) (D13: tarefa final de verificação de unicidade no job `serra_azul_daily`)
+- **Status:** aceito — emendado pelo [ADR-0010](0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) (D13: tarefa final de verificação de unicidade no job `serra_azul_daily`) e pelo [ADR-0012](0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) (simulador como script Python numa `spark_python_task`, e não notebook; retentativas definidas tarefa a tarefa: 1 no simulador e na verificação, 0 nos pipelines, no lugar de 1 por tarefa; o agendamento pausado continua)
 - **Data:** 2026-10-19
 - **Fatia:** fatia 1 (revisão da fase 0)
 - **Decisor:** Engenheiro de Dados Sênior (Claude) · **Acompanhamento:** usuário (pode vetar)

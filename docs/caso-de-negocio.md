@@ -70,6 +70,7 @@ Horizonte: **18 meses de história** para o ERP/estoque/logística e **12 meses*
 - `erp_clientes_pdv`, `erp_produtos` e `erp_hierarquia_comercial` trazem `valid_from` em cada versão; a extração full traz o histórico inteiro de versões.
 - Os extratos chegam em Parquet em `/Volumes/core/landing/erp/<dataset>/<AAAA-MM-DD>/` (ADR-0004).
 - **Carga inicial gerada em 2026-10-19:** colunas, regras, volumes reais e contagem de cada sujeira em [dicionario-de-dados-erp.md](dicionario-de-dados-erp.md).
+- **Extração diária desde 2026-10-20:** o job `serra_azul_daily` simula o ERP depois do go-live, uma extração por dia (incremental para os fatos, full para os cadastros), com as mesmas sujeiras da carga. Por simplificação, depois do go-live não há cadastro novo nem reorganização da hierarquia; o único cadastro que chega é o dos clientes que ficaram fora da carga. *Incluída em 2026-10-28 ([ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md)).*
 
 ### 5.2 Produção e estoque
 
@@ -113,7 +114,7 @@ Nos dados gerados, essa é a distribuição dos PDVs. Em volume, o Sudeste chega
 | **Custo** | Serverless com *fair usage quota*: tudo roda em **1 execução diária**; reprocessos são exceção justificada |
 | **Retenção** | Bronze de datasets incrementais: tudo; bronze de datasets full: últimas 90 extrações; landing: 90 dias. Em produção, prazo legal de guarda fiscal ([ADR-0007](adr/0007-retencao-da-bronze-por-tipo-de-extracao.md), ajustado em 2026-10-19; antes: "bronze 90 dias") |
 | **Reprocessamento** | Qualquer dia pode ser reprocessado sem gerar duplicata (idempotência é critério de pronto de toda fatia) |
-| **LGPD** | PII só na bronze, com acesso restrito; não é copiada para silver/gold (minimização, [ADR-0004](adr/0004-ajustes-de-organizacao-nomes-landing-e-pii.md)); direito ao esquecimento = apagar na bronze e na landing + `VACUUM` |
+| **LGPD** | PII só na bronze, com acesso restrito; não é copiada para silver/gold (minimização, [ADR-0004](adr/0004-ajustes-de-organizacao-nomes-landing-e-pii.md)); direito ao esquecimento = apagar na bronze e na landing + `VACUUM`, e o ERP parar de enviar o titular: a extração full de clientes o traria de volta no dia seguinte ([ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md), ajustado em 2026-10-28) |
 
 ## 7. Limitações do Databricks Free Edition que moldam o projeto
 

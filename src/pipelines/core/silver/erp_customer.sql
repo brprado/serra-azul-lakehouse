@@ -1,6 +1,9 @@
 -- Silver: versões de cadastro de cliente, sem PII (ADR-0004, ADR-0006, ADR-0008).
 -- A extração full traz o histórico inteiro, então a silver é recalculada a partir da extração mais recente.
 -- O que acontece aqui, nesta ordem:
+--   0. reenvio da mesma extração (o mesmo arquivo com outro nome): a bronze guarda as duas cópias, e linhas idênticas
+--      em todas as colunas de negócio viram uma (ADR-0012). Um reenvio corrigido da mesma data não é tratado: a
+--      correção chega na extração do dia seguinte;
 --   1. valida o dígito verificador do CNPJ/CPF e guarda só o resultado (o documento não sai da bronze);
 --      dígitos todos iguais (000.000.000-00) passam no módulo 11, mas não são documento real (ADR-0009);
 --   2. troca a cidade digitada pela cidade oficial do CEP (correção de grafia nunca vira versão nova);
@@ -19,9 +22,13 @@ CREATE OR REFRESH MATERIALIZED VIEW silver.erp_customer (
 COMMENT 'Clientes do ERP por versão de cadastro. Sem PII; cidade padronizada pelo CEP; vigência semiaberta.'
 AS
 WITH latest AS (
-  SELECT *, regexp_replace(cnpj_cpf, '[^0-9]', '') AS doc
+  -- Uma linha por combinação de colunas, sem as técnicas que mudam no reenvio (arquivo e instante da ingestão).
+  -- GROUP BY ALL, e não DISTINCT: na prova de idempotência (2026-10-27), SELECT DISTINCT * EXCEPT (...) manteve as
+  -- duas cópias nesta materialized view, embora a mesma consulta no SQL warehouse desse uma (ADR-0012).
+  SELECT * EXCEPT (_source_file, _ingested_at), regexp_replace(cnpj_cpf, '[^0-9]', '') AS doc
   FROM bronze.erp_customer
   WHERE _extraction_date = (SELECT max(_extraction_date) FROM bronze.erp_customer)
+  GROUP BY ALL
 ),
 check_digits AS (
   -- Módulo 11: CNPJ usa pesos 5..2,9..2 (1º dígito) e 6..2,9..2 (2º); CPF usa 10..2 e 11..2.

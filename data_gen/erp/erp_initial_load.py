@@ -12,6 +12,10 @@ Determinístico: toda aleatoriedade vem de um hash (xxhash64) da chave do regist
 semente fixa, então rodar de novo produz exatamente os mesmos arquivos (carga idempotente).
 Tabelas mestras pequenas (produtos, hierarquia, CEPs) são montadas no driver; as volumosas
 (clientes, pedidos, notas) são geradas com Spark, sem loops em Python sobre os dados.
+
+Este arquivo também é o "mundo" do simulador da extração diária (erp_daily_extraction.py), que o importa:
+as fórmulas ficam só aqui. Os parâmetros opcionais de build_orders e build_invoices existem para ele; com os
+valores padrão, a carga inicial gera exatamente o que gerava.
 """
 
 import argparse
@@ -212,9 +216,33 @@ MONTH_FACTOR = {1: 1.12, 2: 1.15, 3: 1.02, 4: 0.95, 5: 0.90, 6: 0.90, 7: 0.86, 8
 DOW_FACTOR = {1: 0.02, 2: 1.18, 3: 1.12, 4: 1.10, 5: 1.12, 6: 1.21, 7: 0.35}  # dayofweek: 1 = domingo
 HOLIDAYS = [date(2025, 4, 21), date(2025, 5, 1), date(2025, 6, 19), date(2025, 9, 7), date(2025, 10, 12), date(2025, 11, 2),
             date(2025, 11, 15), date(2025, 11, 20), date(2025, 12, 25), date(2026, 1, 1), date(2026, 4, 3), date(2026, 4, 21),
-            date(2026, 5, 1), date(2026, 6, 4), date(2026, 9, 7), date(2026, 10, 12)]
+            date(2026, 5, 1), date(2026, 6, 4), date(2026, 9, 7), date(2026, 10, 12),
+            # Depois do horizonte da carga inicial, para a extração diária: só afetam datas futuras, a história não muda.
+            # O calendário vale até o fim de 2027; depois disso, nenhum feriado.
+            date(2026, 11, 2), date(2026, 11, 15), date(2026, 11, 20), date(2026, 12, 25), date(2027, 1, 1), date(2027, 3, 26),
+            date(2027, 4, 21), date(2027, 5, 1), date(2027, 5, 27), date(2027, 9, 7), date(2027, 10, 12), date(2027, 11, 2),
+            date(2027, 11, 15), date(2027, 11, 20), date(2027, 12, 25)]
 # Crescimento por região (multiplicador no início → no fim da janela): a expansão no Nordeste
 GROWTH = {"NORDESTE": (0.84, 1.36), "SUDESTE": (0.96, 1.08), "SUL": (0.94, 1.10), "CENTRO-OESTE": (0.93, 1.12), "NORTE": (0.92, 1.12)}
+# Maior distância, em dias, entre a data do pedido e o último evento dele (ver build_orders): faturamento em até
+# D+2 e devolução de 3 a 20 dias depois dele. O simulador diário usa o limite para saber que pedidos antigos ainda
+# geram evento numa data, e confere o valor nos dados que gera.
+MAX_EVENT_LAG = 22
+# Último dia de 1ª NF com a regra original do faturamento parcial (ver build_invoices): o fim do horizonte da carga
+# inicial que está na landing. É um fato da história gravada, e não um parâmetro: a extração diária continua essa história.
+QTY1_ORIGINAL_RULE_UNTIL = date(2026, 10, 18)
+
+# Contrato da landing dos cadastros: a carga inicial e a extração diária gravam o mesmo schema, senão o Auto Loader
+# da bronze recebe tipos diferentes para a mesma coluna.
+PRODUCT_SCHEMA = ("cod_produto string, sku string, ean string, descricao string, marca string, categoria string, "
+                  "liquido string, embalagem string, volume_ml int, unidades_pack int, status string, dt_lancamento date, "
+                  "dt_descontinuacao date, dt_inicio_vigencia date, dt_fim_vigencia date, dt_atualizacao timestamp")
+HIERARCHY_SCHEMA = ("cod_vendedor string, nome_vendedor string, cod_supervisor string, nome_supervisor string, "
+                    "cod_gerente string, nome_gerente string, regiao_comercial string, dt_inicio_vigencia date, "
+                    "dt_fim_vigencia date, dt_registro date, dt_atualizacao timestamp")
+CUSTOMER_COLUMNS = ["cod_cliente", "tipo_cliente", "segmento", "tipo_pessoa", "cnpj_cpf", "razao_social", "nome_fantasia",
+                    "nome_responsavel", "email", "telefone", "cep", "logradouro", "numero", "bairro", "municipio", "uf",
+                    "status", "dt_cadastro", "dt_inicio_vigencia", "dt_fim_vigencia", "dt_atualizacao"]
 
 
 def strip_accents(text):
@@ -272,6 +300,17 @@ def build_city_slots():
             rows.extend((regiao, s, i) for s in range(lo, hi))
             lo = hi
     return rows
+
+
+def reference_frames(spark):
+    """CEPs, cidades e sorteio de cidade por região: a geografia dos clientes, igual em toda execução."""
+    ceps, n_by_city = build_ceps(random.Random(SEED))
+    cities_df = spark.createDataFrame(
+        [(i, c[0], c[1], c[2], c[4], n_by_city[i]) for i, c in enumerate(CITIES)],
+        "city_idx int, municipio_canonico string, uf string, regiao string, variante string, n_ceps int")
+    ceps_df = spark.createDataFrame(ceps, "city_idx int, k int, cep string, municipio string, uf string")
+    city_slots_df = spark.createDataFrame(build_city_slots(), "regiao string, slot int, city_idx int")
+    return ceps, cities_df, ceps_df, city_slots_df
 
 
 # ============================================================================ driver: produtos
@@ -358,7 +397,9 @@ def build_products(start, end):
                              p["pack"], status, p["launch"], dt_desc, vstart, vend,
                              datetime.combine(vstart, time(9, rng.randint(0, 59)))))
 
-    # Tabela de sorteio: (mês, grupo, slot 0..999) -> produto, respeitando lançamento/descontinuação e participação de marca
+    # Tabela de sorteio: (mês, grupo, slot 0..999) -> produto, respeitando lançamento/descontinuação e participação de marca.
+    # Vai até o mês de `end`. Cada mês é calculado sozinho e sem sorteio, então um `end` posterior (extração diária) só
+    # acrescenta meses, iguais ao último do horizonte: não há lançamento nem descontinuação depois dele.
     slots = []
     m_last = (end.year - 2025) * 12 + end.month - 4
     for m in range(m_last + 1):
@@ -390,6 +431,16 @@ def build_products(start, end):
         litros = emb[1] * p["pack"] / 1000.0
         info.append((p["cod"], p["brand"], emb[0], litros, round(b["preco_litro"] * litros * emb[2], 2)))
     return versions, slots, info, products, promos, reused
+
+
+def product_frames(spark, start, end):
+    """Produtos como DataFrames: versões (o arquivo da landing), sorteio por mês e preço/litros por produto."""
+    versions, slots, info, products, promos, reused = build_products(start, end)
+    versions_df = spark.createDataFrame(versions, PRODUCT_SCHEMA)
+    slots_df = spark.createDataFrame(slots, "month_idx int, grp string, slot int, cod_produto string")
+    info_df = spark.createDataFrame(info, "cod_produto string, marca_cod string, embalagem string, "
+                                          "litros_pack double, preco_base double")
+    return versions_df, slots_df, info_df, versions, products, reused
 
 
 # ============================================================================ driver: hierarquia
@@ -492,6 +543,14 @@ def build_hierarchy(start, end, faker_cls):
             for i, cod in enumerate(sorted(cods)):
                 slots.append((region, p, i, len(cods), cod))
     return versions, slots, late
+
+
+def hierarchy_frames(spark, start, end, faker_cls):
+    """Hierarquia como DataFrames: versões (o arquivo da landing) e a carteira de vendedores por período."""
+    versions, slots, late = build_hierarchy(start, end, faker_cls)
+    versions_df = spark.createDataFrame(versions, HIERARCHY_SCHEMA)
+    slots_df = spark.createDataFrame(slots, "regiao_comercial string, periodo int, slot int, n_slots int, cod_vendedor string")
+    return versions_df, slots_df, versions, late
 
 
 # ============================================================================ Spark: clientes
@@ -669,8 +728,18 @@ def build_customer_versions(base, start, end, city_slots_df, cities_df, ceps_df)
 
 
 # ============================================================================ Spark: pedidos
-def build_orders(spark, base, start, end, rep_slots_df):
-    days = (spark.sql(f"SELECT explode(sequence(DATE'{start}', DATE'{end}')) AS dt_pedido")
+def build_orders(spark, base, start, end, rep_slots_df, first_day=None, last_day=None, as_of=None, id_offset=0):
+    """Pedidos (um por linha) com o ciclo de vida sorteado e a foto do status numa data.
+
+    start/end: horizonte da história. A tendência de crescimento vai de start a end; depois do go-live eles ficam fixos,
+    senão a história muda. Os parâmetros opcionais existem para a extração diária; os padrões reproduzem a carga inicial:
+    - first_day/last_day: datas de pedido geradas (padrão: o horizonte). Depois de end, a tendência continua a reta;
+    - as_of: data da foto do status (padrão: end), ver order_status_as_of;
+    - id_offset: pedidos anteriores a first_day, para num_pedido continuar a numeração global. Ela segue a data do
+      pedido, então gerar só uma janela de dias e somar o que veio antes dá o mesmo número.
+    """
+    first_day, last_day, as_of = first_day or start, last_day or end, as_of or end
+    days = (spark.sql(f"SELECT explode(sequence(DATE'{first_day}', DATE'{last_day}')) AS dt_pedido")
             .withColumn("dow", F.dayofweek("dt_pedido"))
             .withColumn("mes", F.month("dt_pedido")))
     dow_mean = sum(DOW_FACTOR.values()) / 7.0
@@ -682,6 +751,11 @@ def build_orders(spark, base, start, end, rep_slots_df):
                 .when(dt.between(F.lit(date(2026, 2, 7)), F.lit(date(2026, 2, 13))), 1.35)   # abastecimento pré-Carnaval
                 .when(dt.isin(F.lit(date(2025, 12, 24)), F.lit(date(2025, 12, 31))), 0.3)
                 .when(dt.between(F.lit(date(2025, 12, 10)), F.lit(date(2025, 12, 23))), 1.15)
+                # Depois do horizonte (extração diária): os mesmos eventos no ano seguinte, sem tocar nas datas acima.
+                .when(dt.isin(F.lit(date(2026, 12, 24)), F.lit(date(2026, 12, 31))), 0.3)
+                .when(dt.between(F.lit(date(2026, 12, 10)), F.lit(date(2026, 12, 23))), 1.15)
+                .when(dt.between(F.lit(date(2027, 2, 6)), F.lit(date(2027, 2, 9))), 0.4)     # Carnaval de 2027
+                .when(dt.between(F.lit(date(2027, 1, 30)), F.lit(date(2027, 2, 5))), 1.35)
                 .otherwise(1.0))
     days = days.withColumn("f_dia", f_dow * f_mes * f_evento).withColumn(
         "t", F.datediff(dt, F.lit(start)) / F.lit(float((end - start).days)))
@@ -703,7 +777,7 @@ def build_orders(spark, base, start, end, rep_slots_df):
             .withColumn("seq", F.explode(F.sequence(F.lit(1), F.col("n")))))
 
     w_id = Window.orderBy("dt_pedido", "cod_cliente", "seq")
-    ped = grid.withColumn("num_pedido", F.format_string("PV%08d", F.row_number().over(w_id)))
+    ped = grid.withColumn("num_pedido", F.format_string("PV%08d", F.row_number().over(w_id) + F.lit(id_offset)))
     oid = F.col("num_pedido")
     is_pdv = F.col("tipo_cliente") == "PDV"
 
@@ -738,24 +812,38 @@ def build_orders(spark, base, start, end, rep_slots_df):
            .withColumn("dt_fat2", F.date_add(F.col("dt_fat1"), (F.lit(1) + (u("lag2", oid) * 3).cast("int"))))
            .withColumn("dt_cancela", F.when(F.col("cancela_antes"), F.date_add(dt, (u("lag_cancela", oid) * 2).cast("int")))
                        .otherwise(F.date_add(F.col("dt_fat1"), F.lit(1) + (u("lag_cancela", oid) * 10).cast("int"))))
-           .withColumn("dt_devolucao", F.date_add(F.col("dt_fat1"), F.lit(3) + (u("lag_devolucao", oid) * 18).cast("int")))
-           .withColumn("faturado1", ~F.col("cancela_antes") & (F.col("dt_fat1") <= F.lit(end)))
-           .withColumn("faturado2", F.col("parcial") & F.col("faturado1") & (F.col("dt_fat2") <= F.lit(end)))
-           .withColumn("cancelado_depois", F.col("cancela_depois") & F.col("faturado1") & (F.col("dt_cancela") <= F.lit(end)))
-           .withColumn("devolvido", F.col("devolve") & F.col("faturado1") & (F.col("dt_devolucao") <= F.lit(end))))
+           .withColumn("dt_devolucao", F.date_add(F.col("dt_fat1"), F.lit(3) + (u("lag_devolucao", oid) * 18).cast("int"))))
+    ped = order_status_as_of(ped, as_of)
+    # As colunas sorteadas (cancela_antes, cancela_depois, devolve) vão junto para a foto poder ser refeita em outra data.
+    return ped.select("num_pedido", "cod_cliente", "tipo_cliente", "regiao", "uf0", "grp", "fora_da_carga", "cod_vendedor",
+                      "dt_pedido", "month_idx", "n_itens", "dt_criacao", "status", "dt_atualizacao", "parcial",
+                      "faturado1", "faturado2", "cancelado_depois", "devolvido", "dt_fat1", "dt_fat2", "dt_cancela",
+                      "dt_devolucao", "cancela_antes", "cancela_depois", "devolve", "dt_ultimo_evento")
+
+
+def order_status_as_of(ped, as_of):
+    """Foto do pedido numa data: o que já foi faturado, cancelado ou devolvido até as_of, o status e a última atualização.
+
+    O ciclo de vida (datas de faturamento, cancelamento e devolução) é sorteado uma vez em build_orders; aqui só se olha
+    o que já aconteceu. A carga inicial tira a foto no fim do horizonte; a extração diária, em cada dia D, e entrega
+    o cabeçalho dos pedidos cujo último evento (dt_ultimo_evento) é D. A devolução não muda o cabeçalho, só gera NF.
+    """
+    oid = F.col("num_pedido")
+    ped = (ped
+           .withColumn("faturado1", ~F.col("cancela_antes") & (F.col("dt_fat1") <= F.lit(as_of)))
+           .withColumn("faturado2", F.col("parcial") & F.col("faturado1") & (F.col("dt_fat2") <= F.lit(as_of)))
+           .withColumn("cancelado_depois", F.col("cancela_depois") & F.col("faturado1") & (F.col("dt_cancela") <= F.lit(as_of)))
+           .withColumn("devolvido", F.col("devolve") & F.col("faturado1") & (F.col("dt_devolucao") <= F.lit(as_of))))
     status = (F.when(F.col("cancela_antes") | F.col("cancelado_depois"), F.lit("CANCELADO"))
               .when(~F.col("faturado1"), F.lit("ABERTO"))
               .when(F.col("parcial") & ~F.col("faturado2"), F.lit("PARCIALMENTE FATURADO"))
               .otherwise(F.lit("FATURADO")))
     last_event = (F.when(F.col("cancela_antes") | F.col("cancelado_depois"), F.col("dt_cancela"))
                   .when(F.col("faturado2"), F.col("dt_fat2")).when(F.col("faturado1"), F.col("dt_fat1")))
-    ped = (ped.withColumn("status", status)
-           .withColumn("dt_atualizacao", F.when(last_event.isNull(), F.col("dt_criacao"))
-                       .otherwise(F.greatest(F.col("dt_criacao"), at_time(last_event, "hora_evento", oid, first_hour=8, hours=10)))))
-    return ped.select("num_pedido", "cod_cliente", "tipo_cliente", "regiao", "uf0", "grp", "fora_da_carga", "cod_vendedor",
-                      "dt_pedido", "month_idx", "n_itens", "dt_criacao", "status", "dt_atualizacao", "parcial",
-                      "faturado1", "faturado2", "cancelado_depois", "devolvido", "dt_fat1", "dt_fat2", "dt_cancela",
-                      "dt_devolucao")
+    return (ped.withColumn("status", status)
+            .withColumn("dt_ultimo_evento", last_event)
+            .withColumn("dt_atualizacao", F.when(last_event.isNull(), F.col("dt_criacao"))
+                        .otherwise(F.greatest(F.col("dt_criacao"), at_time(last_event, "hora_evento", oid, first_hour=8, hours=10)))))
 
 
 def build_items(ped, product_slots_df, product_info_df):
@@ -793,16 +881,60 @@ def build_items(ped, product_slots_df, product_info_df):
                      "vl_total_item", "dt_criacao")
 
 
+def order_header(ped, items):
+    """Cabeçalho do pedido como o ERP o entrega. O total é a soma dos itens corretos (antes do sinal trocado)."""
+    totals = items.groupBy("num_pedido").agg(money(F.sum("vl_total_item")).alias("vl_total_pedido"))
+    return ped.join(totals, "num_pedido").select("num_pedido", "cod_cliente", "cod_vendedor", "dt_pedido", "status",
+                                                 "vl_total_pedido", "dt_criacao", "dt_atualizacao")
+
+
+def order_header_dirt(head):
+    """Sujeiras do cabeçalho: duplicata exata (reenvio da integração, ~1,5% dos pedidos) e quase-duplicata (o mesmo
+    pedido com o status antigo, ABERTO, e a data de atualização da criação, ~0,5% dos que já saíram de ABERTO).
+    O sorteio é pela chave do pedido: na extração diária, o mesmo pedido repete a sujeira em cada dia em que aparece."""
+    oid = F.col("num_pedido")
+    exact = head.where(u("duplicata", oid) < 0.015)
+    quasi = (head.where((u("quase_duplicata", oid) < 0.005) & (F.col("status") != "ABERTO"))
+             .withColumn("status", F.lit("ABERTO")).withColumn("dt_atualizacao", F.col("dt_criacao")))
+    return head.unionByName(exact).unionByName(quasi)
+
+
+def order_item_dirt(items):
+    """Itens como o ERP os entrega, com a sujeira de integração: ~0,1% com quantidade e valores negativos."""
+    neg = u("negativo", F.col("num_pedido"), F.col("item_pedido")) < 0.001
+    return items.select(
+        "num_pedido", "item_pedido", "cod_produto",
+        F.when(neg, -F.col("quantidade")).otherwise(F.col("quantidade")).alias("quantidade"), "vl_unitario",
+        F.when(neg, -F.col("vl_desconto")).otherwise(F.col("vl_desconto")).alias("vl_desconto"),
+        F.when(neg, -F.col("vl_total_item")).otherwise(F.col("vl_total_item")).alias("vl_total_item"),
+        F.col("dt_criacao").alias("dt_atualizacao"))
+
+
 # ============================================================================ Spark: notas fiscais
-def build_invoices(ped, items):
+def build_invoices(ped, items, first_issue_date=None, nf_offset=0):
+    """NFs (cabeçalho e itens): 1ª NF de venda, 2ª NF do faturamento parcial e NF de devolução (cancelamento depois de
+    faturar ou devolução parcial), emitidas até a data da foto de `ped`.
+
+    Os parâmetros opcionais existem para a extração diária; os padrões reproduzem a carga inicial:
+    - first_issue_date: só entram NFs emitidas a partir desta data. A numeração segue a data de emissão, então só sai
+      certa se `ped` traz todos os pedidos que emitem NF a partir dela (MAX_EVENT_LAG dias antes, no mínimo);
+    - nf_offset: NFs emitidas antes de first_issue_date, para num_nf continuar a numeração global.
+    """
     flags = ped.select("num_pedido", "cod_cliente", "regiao", "uf0", "parcial", "faturado1", "faturado2",
                        "cancelado_depois", "devolvido", "dt_fat1", "dt_fat2", "dt_cancela", "dt_devolucao")
     x = items.join(flags, "num_pedido")
-    # least(q - 1, ...) garante que a 2ª NF receba ao menos 1 unidade. A carga de 2026-10-19 foi gerada antes
-    # desta correção (commit 9ef90fd) e tem itens com quantidade 0 na 2ª NF quando o pedido tinha 2 unidades (ADR-0008).
+    # Faturamento parcial: a 1ª NF leva ~60% de cada item e a 2ª, o resto. A regra original, ceil(0,6 q), deixa a 2ª NF
+    # com 0 unidades quando o item tem 2 (16.285 itens na carga inicial, ADR-0008); a corrigida, least(q - 1, ...),
+    # garante ao menos 1 unidade em cada NF. A landing é a verdade do ERP e a extração diária continua a história dela:
+    # a regra corrigida vale só para pedidos cuja 1ª NF sai depois de QTY1_ORIGINAL_RULE_UNTIL. Um pedido com a 1ª NF
+    # até essa data (já na landing, com as 2 unidades) tem a 2ª NF com o item de quantidade 0, como os que já estão lá
+    # (a silver o descarta). Aplicar a regra nova a ele faturaria 3 unidades de um item de 2 (ADR-0012).
+    # Assim a carga inicial reproduz exatamente a landing de 2026-10-19 (gerador do commit 9ef90fd).
+    qty_original = F.ceil(F.col("quantidade") * 0.6)
+    qty_fixed = F.least(F.col("quantidade") - 1, qty_original)
     qty1 = F.when(F.col("parcial") & (F.col("quantidade") >= 2),
-                  F.least(F.col("quantidade") - 1, F.ceil(F.col("quantidade") * 0.6)).cast("int")).otherwise(
-        F.col("quantidade"))
+                  F.when(F.col("dt_fat1") > F.lit(QTY1_ORIGINAL_RULE_UNTIL), qty_fixed).otherwise(qty_original)
+                  .cast("int")).otherwise(F.col("quantidade"))
     x = x.withColumn("qtd1", qty1)
     seq1 = x.where("faturado1").select("*", F.lit(1).alias("seq"), F.col("qtd1").alias("qtd_nf"))
     seq2 = x.where(F.col("faturado2") & (F.col("quantidade") >= 2)).select(
@@ -818,13 +950,15 @@ def build_invoices(ped, items):
     dt_emissao = (F.when(F.col("seq") == 1, F.col("dt_fat1")).when(F.col("seq") == 2, F.col("dt_fat2"))
                   .when(F.col("cancelado_depois"), F.col("dt_cancela")).otherwise(F.col("dt_devolucao")))
     lines = lines.withColumn("dt_emissao", dt_emissao)
-    plant_uf = (F.when(F.col("regiao") == "NORDESTE", "BA").when(F.col("regiao").isin("SUL", "CENTRO-OESTE"), "SP")
+    if first_issue_date is not None:
+        lines = lines.where(F.col("dt_emissao") >= F.lit(first_issue_date))
+    plant_uf =(F.when(F.col("regiao") == "NORDESTE", "BA").when(F.col("regiao").isin("SUL", "CENTRO-OESTE"), "SP")
                 .when(F.col("uf0") == "SP", "SP").otherwise("MG"))
     same_uf = F.col("uf0") == plant_uf
     cfop = (F.when(F.col("seq") < 3, F.when(same_uf, "5102").otherwise("6102"))
             .otherwise(F.when(same_uf, "1202").otherwise("2202")))
     headers = (lines.select("num_pedido", "seq", "cod_cliente", "dt_emissao", cfop.alias("cfop")).distinct()
-               .withColumn("num_nf", F.format_string("%09d", F.lit(100000000) + F.row_number().over(
+               .withColumn("num_nf", F.format_string("%09d", F.lit(100000000 + nf_offset) + F.row_number().over(
                    Window.orderBy("dt_emissao", "num_pedido", "seq"))))
                .withColumn("dt_atualizacao", at_time(F.col("dt_emissao"), "hora_nf", F.col("num_pedido"), F.col("seq"),
                                                      first_hour=6, hours=14)))
@@ -890,22 +1024,13 @@ def main():
     common = dict(semente=SEED, periodo=[args.start, args.end], data_extracao=ext, escala=args.scale)
 
     # ---- referências e mestres pequenos (driver)
-    rng = random.Random(SEED)
-    ceps, n_by_city = build_ceps(rng)
-    cities_df = spark.createDataFrame(
-        [(i, c[0], c[1], c[2], c[4], n_by_city[i]) for i, c in enumerate(CITIES)],
-        "city_idx int, municipio_canonico string, uf string, regiao string, variante string, n_ceps int")
-    ceps_df = spark.createDataFrame(ceps, "city_idx int, k int, cep string, municipio string, uf string")
-    city_slots_df = spark.createDataFrame(build_city_slots(), "regiao string, slot int, city_idx int")
+    ceps, cities_df, ceps_df, city_slots_df = reference_frames(spark)
 
     p_cep = write(ceps_df.select("cep", "municipio", "uf").orderBy("cep"), f"{ref}/cep_municipio/{ext}", 1)
     save_manifest(manifests, "cep_municipio", {**common, "caminho": p_cep, "linhas": len(ceps)})
 
-    prod_versions, prod_slots, prod_info, products, promos, reused = build_products(start, end)
-    prod_schema = ("cod_produto string, sku string, ean string, descricao string, marca string, categoria string, "
-                   "liquido string, embalagem string, volume_ml int, unidades_pack int, status string, dt_lancamento date, "
-                   "dt_descontinuacao date, dt_inicio_vigencia date, dt_fim_vigencia date, dt_atualizacao timestamp")
-    p_prod = write(spark.createDataFrame(prod_versions, prod_schema), f"{erp}/produtos/{ext}", 1)
+    prod_df, product_slots_df, product_info_df, prod_versions, products, reused = product_frames(spark, start, end)
+    p_prod = write(prod_df, f"{erp}/produtos/{ext}", 1)
     eans = {}
     for p in products:
         eans.setdefault(p["ean"], set()).add(p["cod"])
@@ -919,15 +1044,9 @@ def main():
         "lancamentos_na_janela": sum(1 for p in products if p["launch"] >= start),
         "ativos_no_fim": sum(1 for p in products if p["disc"] is None or p["disc"] >= end),
     })
-    product_slots_df = spark.createDataFrame(prod_slots, "month_idx int, grp string, slot int, cod_produto string")
-    product_info_df = spark.createDataFrame(prod_info, "cod_produto string, marca_cod string, embalagem string, "
-                                                       "litros_pack double, preco_base double")
 
-    hier_versions, rep_slots, late = build_hierarchy(start, end, Faker)
-    hier_schema = ("cod_vendedor string, nome_vendedor string, cod_supervisor string, nome_supervisor string, "
-                   "cod_gerente string, nome_gerente string, regiao_comercial string, dt_inicio_vigencia date, "
-                   "dt_fim_vigencia date, dt_registro date, dt_atualizacao timestamp")
-    p_hier = write(spark.createDataFrame(hier_versions, hier_schema), f"{erp}/hierarquia_comercial/{ext}", 1)
+    hier_df, rep_slots_df, hier_versions, late = hierarchy_frames(spark, start, end, Faker)
+    p_hier = write(hier_df, f"{erp}/hierarquia_comercial/{ext}", 1)
     ne_to_se = sum(1 for v in hier_versions if v[7] == REORGS[4] and v[6] == "SUDESTE"
                    and any(o[0] == v[0] and o[6] == "NORDESTE" and o[8] == REORGS[4] - timedelta(days=1) for o in hier_versions))
     save_manifest(manifests, "hierarquia_comercial", {
@@ -938,7 +1057,6 @@ def main():
         "troca_de_gerente_ne_em_2026_01_01": "G07",
         "vigentes_hoje": sum(1 for v in hier_versions if v[8] is None),
     })
-    rep_slots_df = spark.createDataFrame(rep_slots, "regiao_comercial string, periodo int, slot int, n_slots int, cod_vendedor string")
 
     # ---- clientes (Spark + Faker)
     base = build_customer_base(spark, start, end, n_pdv, city_slots_df, cities_df)
@@ -947,10 +1065,7 @@ def main():
     cust = build_customer_versions(base, start, end, city_slots_df, cities_df, ceps_df)
     cust_path = write(cust, f"{work}/clientes_versoes", 4)
     cust = spark.read.parquet(cust_path)
-    cust_cols = ["cod_cliente", "tipo_cliente", "segmento", "tipo_pessoa", "cnpj_cpf", "razao_social", "nome_fantasia",
-                 "nome_responsavel", "email", "telefone", "cep", "logradouro", "numero", "bairro", "municipio", "uf",
-                 "status", "dt_cadastro", "dt_inicio_vigencia", "dt_fim_vigencia", "dt_atualizacao"]
-    p_cli = write(cust.where(~F.col("fora_da_carga")).select(*cust_cols), f"{erp}/clientes_pdv/{ext}", 2)
+    p_cli = write(cust.where(~F.col("fora_da_carga")).select(*CUSTOMER_COLUMNS), f"{erp}/clientes_pdv/{ext}", 2)
 
     cv = (cust.where(~F.col("fora_da_carga"))
           .join(ceps_df.select("cep", F.col("municipio").alias("municipio_ref")), "cep", "left"))
@@ -989,23 +1104,9 @@ def main():
     items_path = write(items, f"{work}/itens", 8)
     items = spark.read.parquet(items_path)
 
-    totals = items.groupBy("num_pedido").agg(money(F.sum("vl_total_item")).alias("vl_total_pedido"))
-    head = ped.join(totals, "num_pedido").select("num_pedido", "cod_cliente", "cod_vendedor", "dt_pedido", "status",
-                                                 "vl_total_pedido", "dt_criacao", "dt_atualizacao")
-    oid = F.col("num_pedido")
-    exact = head.where(u("duplicata", oid) < 0.015)                                   # reenvio da integração
-    quasi = (head.where((u("quase_duplicata", oid) < 0.005) & (F.col("status") != "ABERTO"))
-             .withColumn("status", F.lit("ABERTO")).withColumn("dt_atualizacao", F.col("dt_criacao")))
-    p_cab = write(head.unionByName(exact).unionByName(quasi), f"{erp}/pedidos_cab/{ext}", 4)
-
-    neg = u("negativo", oid, F.col("item_pedido")) < 0.001
-    items_out = items.select(
-        "num_pedido", "item_pedido", "cod_produto",
-        F.when(neg, -F.col("quantidade")).otherwise(F.col("quantidade")).alias("quantidade"), "vl_unitario",
-        F.when(neg, -F.col("vl_desconto")).otherwise(F.col("vl_desconto")).alias("vl_desconto"),
-        F.when(neg, -F.col("vl_total_item")).otherwise(F.col("vl_total_item")).alias("vl_total_item"),
-        F.col("dt_criacao").alias("dt_atualizacao"))
-    p_itens = write(items_out, f"{erp}/pedidos_itens/{ext}", 8)
+    head = order_header(ped, items)
+    p_cab = write(order_header_dirt(head), f"{erp}/pedidos_cab/{ext}", 4)
+    p_itens = write(order_item_dirt(items), f"{erp}/pedidos_itens/{ext}", 8)
 
     nf, nf_items = build_invoices(ped, items)
     nf_path = write(nf, f"{work}/nf", 4)

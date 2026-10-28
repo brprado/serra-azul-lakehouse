@@ -1,6 +1,6 @@
 # ADR-0010: Construir o pipeline commercial com fatos recalculados, chaves pela data do documento que carrega a FK, motivo do membro desconhecido exposto e regras de vigência nos cadastros
 
-- **Status:** aceito
+- **Status:** aceito — emendado pelo [ADR-0012](0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) (D13 entregue na tarefa `verify_uniqueness`, ampliada com a contagem de cada fato contra a silver e com as versões repetidas na silver de cadastros; idempotência provada, o que fecha a dívida "idempotência ainda sem prova"; "com o gerador corrigido, as próximas cargas devem coincidir" refinado: a regra corrigida do faturamento parcial vale só para pedidos cuja 1ª NF sai depois de 2026-10-18; os pipelines deixam de ter retentativa de tarefa no job)
 - **Data:** 2026-10-21
 - **Fatia:** fatia 1 — Comercial
 - **Decisor:** Engenheiro de Dados Sênior (Claude) · **Acompanhamento:** usuário (pode vetar)

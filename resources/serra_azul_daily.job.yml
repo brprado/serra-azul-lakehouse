@@ -1,0 +1,87 @@
+# Job diário (ADR-0005, ADR-0010 D13): extração do ERP -> pipeline core -> pipeline commercial -> verificação de unicidade.
+# Em série: o commercial lê a silver e as dimensões do core, e a verificação confere o que os dois publicaram.
+# Agendamento às 05:00 de Brasília, 3h antes do SLA das 8h, mas PAUSADO: cada execução consome a cota do Free Edition,
+# então o job roda à mão (databricks bundle run serra_azul_daily). Sem notificação por e-mail: a entrega não é
+# garantida no Free Edition.
+resources:
+  jobs:
+    serra_azul_daily:
+      name: serra_azul_daily
+      description: Extração diária simulada do ERP na landing, pipelines core e commercial e verificação de unicidade dos fatos e dimensões.
+      max_concurrent_runs: 1  # duas execuções juntas gravariam a mesma extração e disputariam os pipelines
+      schedule:
+        quartz_cron_expression: "0 0 5 * * ?"
+        timezone_id: America/Sao_Paulo
+        pause_status: PAUSED
+      parameters:
+        # Vazio = hoje em America/Sao_Paulo (a extração de hoje traz os dados de ontem). Data futura é erro.
+        - name: extraction_date
+          default: ""
+        # Vazio = a landing real (/Volumes/<catalog_core>/landing). Outra raiz serve para o dry run do simulador.
+        - name: output_root
+          default: ""
+        # true = grava de novo a extração de extraction_date com outro nome (reenvio da integração; prova de idempotência).
+        - name: resend
+          default: "false"
+      tasks:
+        # Faz o papel do ERP. 1 retentativa: a tarefa é idempotente (nunca regrava arquivo, completa o que faltou).
+        - task_key: simulate_erp_extraction
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 1800
+          spark_python_task:
+            python_file: ../data_gen/erp/erp_daily_extraction.py
+            parameters:
+              - --catalog
+              - ${var.catalog_core}
+              # O diretório de trabalho de um spark_python_task serverless não é garantido: o simulador recebe o caminho
+              # absoluto do gerador da carga inicial (que ele importa) e dos manifests.
+              - --lib-dir
+              - ${workspace.file_path}/data_gen/erp
+              # Opção e valor num token só: com o valor vazio (o padrão), o argumento chega como "" e não some da lista.
+              - "--extraction-date={{job.parameters.extraction_date}}"
+              - "--output-root={{job.parameters.output_root}}"
+              - "--resend={{job.parameters.resend}}"
+        # Pipelines sem retentativa na tarefa: cada um já tenta de novo 1 vez por dentro, em falha "retryable"
+        # (pipelines.numUpdateRetryAttempts); retentar aqui também multiplicaria as tentativas do update pelas da tarefa.
+        - task_key: core
+          depends_on:
+            - task_key: simulate_erp_extraction
+          max_retries: 0
+          timeout_seconds: 1800
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.core.id}
+            full_refresh: false
+        - task_key: commercial
+          depends_on:
+            - task_key: core
+          max_retries: 0
+          timeout_seconds: 1200
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.commercial.id}
+            full_refresh: false
+        # 1 retentativa: uma violação é determinística e falha de novo em ~35 s, mas uma falha passageira na partida da
+        # tarefa deixaria o job FAILED sem achado nenhum (ADR-0012 D8).
+        - task_key: verify_uniqueness
+          depends_on:
+            - task_key: commercial
+          environment_key: default
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 600
+          spark_python_task:
+            python_file: ../src/jobs/verify_uniqueness.py
+            parameters:
+              - --catalog-core
+              - ${var.catalog_core}
+              - --catalog-commercial
+              - ${var.catalog_commercial}
+      environments:
+        # Mesmo ambiente serverless da carga inicial (resources/erp_initial_load.job.yml): o Faker gera os mesmos dados
+        # pessoais da carga inicial a partir da mesma semente.
+        - environment_key: default
+          spec:
+            client: "4"
+            dependencies:
+              - faker==37.12.0  # versão exata: outra versão do Faker gera outros nomes e endereços para a mesma semente

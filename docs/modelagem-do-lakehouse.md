@@ -1,14 +1,14 @@
 # Modelagem do lakehouse — Serra Azul
 
-> Este documento é a visão consolidada da modelagem em **2026-10-22**, na fatia 1. Ele junta, num lugar só, o que está espalhado em onze ADRs, nas convenções, no dicionário e no código. Os ADRs continuam mandando. Quando houver conflito, valem o ADR (com as emendas aplicadas) e o código.
+> Este documento é a visão consolidada da modelagem em **2026-10-28**, na fatia 1. Ele junta, num lugar só, o que está espalhado em doze ADRs, nas convenções, no dicionário e no código. Os ADRs continuam mandando. Quando houver conflito, valem o ADR (com as emendas aplicadas) e o código.
 
 | Item | Valor |
 |---|---|
 | **O que cobre** | As dimensões, os fatos, as decisões de modelagem e o porquê de cada uma. Também cobre os tratamentos da silver dos quais a gold depende |
 | **O que não faz** | Não decide nada. Toda regra daqui tem um ADR de origem, citado ao lado |
 | **Como manter** | Atualizar quando um ADR mudar uma dimensão, um fato ou uma regra da silver usada pela gold. Os números vêm dos ADRs, do [dicionário](dicionario-de-dados-erp.md) ou dos manifestos (`data_gen/erp/manifest_*.json`). Número sem fonte vira "não medido" |
-| **Status da fatia 1** | Em andamento. Os pipelines `core` (ADR-0008, 0009) e `commercial` (ADR-0010) estão publicados e executados. Faltam o job `serra_azul_daily` (com a verificação de unicidade e a prova de idempotência), o dashboard e os critérios de pronto ([roadmap](roadmap.md)) |
-| **Código** | `src/pipelines/core/{bronze,silver,gold}/`, `src/pipelines/commercial/gold/`, `resources/*.pipeline.yml` |
+| **Status da fatia 1** | Em andamento. Os pipelines `core` (ADR-0008, 0009) e `commercial` (ADR-0010) rodam no job `serra_azul_daily`, com a extração diária simulada do ERP e a verificação de unicidade (ADR-0012). A idempotência foi provada em 2026-10-27/28. Faltam o dashboard e os critérios de pronto ([roadmap](roadmap.md)) |
+| **Código** | `src/pipelines/core/{bronze,silver,gold}/`, `src/pipelines/commercial/gold/`, `src/jobs/verify_uniqueness.py`, `resources/*.pipeline.yml`, `resources/serra_azul_daily.job.yml` |
 
 ---
 
@@ -20,7 +20,7 @@
 
 | Camada | Onde | O que guarda | Tipo de dataset |
 |---|---|---|---|
-| Landing | `core.landing` (volumes) | Arquivos como chegam: `/Volumes/core/landing/<fonte>/<dataset>/<AAAA-MM-DD>/` | Parquet |
+| Landing | `core.landing` (volumes) | Arquivos como chegam: `/Volumes/core/landing/<fonte>/<dataset>/<AAAA-MM-DD>/`. Na extração diária, `<dataset>.parquet`, nunca sobrescrito (ADR-0012) | Parquet |
 | Bronze | `core.bronze` | Cópia fiel e *append-only*. **Única camada com PII** | Streaming table (Auto Loader) |
 | Silver | `core.silver` | Entidades limpas, deduplicadas e sem PII, ainda alinhadas à fonte | Streaming table com `AUTO CDC` (fatos); materialized view (cadastros) |
 | Gold do `core` | `core.gold` | **Somente** dimensões conformadas (`dim_*`) | Materialized view |
@@ -31,7 +31,7 @@
 - **Cada entidade compartilhada tem uma definição só.** Cliente e produto aparecem em todas as fatias.
 - **O acesso é por domínio**, com um `GRANT` por catálogo e herança de privilégios.
 
-**Execução:** dois pipelines SDP em SQL, `core` (landing → dimensões) e `commercial` (fatos), que rodam em série, com o `core` primeiro (ADR-0002, ADR-0005). O Free Edition limita a **um pipeline ativo por tipo**; o significado exato de "ativo" segue sem teste (ADR-0010). O job `serra_azul_daily`, ainda a entregar, vai garantir a ordem.
+**Execução:** dois pipelines SDP em SQL, `core` (landing → dimensões) e `commercial` (fatos), que rodam em série, com o `core` primeiro (ADR-0002, ADR-0005). O Free Edition limita a **um pipeline ativo por tipo**; o significado exato de "ativo" segue sem teste (ADR-0010). O job `serra_azul_daily` garante a ordem: `simulate_erp_extraction` → `core` → `commercial` → `verify_uniqueness` (ADR-0012).
 
 ### 1.2 O *star schema* da fatia 1
 
@@ -144,7 +144,7 @@ A linha pontilhada entre os fatos **não é uma FK**. Ela indica o *drill-across
 | `cep_municipio` (`ref/`) | 5.005 | `ref_postal_code` | 5.005 | usada em `silver.erp_customer` | carga única |
 | — | — | — | — | `core.gold.dim_date` (gerada) | — |
 
-Fontes das contagens: [dicionário](dicionario-de-dados-erp.md), ADR-0008 e ADR-0010. As diferenças entre landing e silver são as deduplicações e os descartes da seção 3.
+Fontes das contagens: [dicionário](dicionario-de-dados-erp.md), ADR-0008 e ADR-0010. São as da **carga inicial**; as extrações diárias desde 2026-10-20 estão no dicionário §5 e no ADR-0012. As diferenças entre landing e silver são as deduplicações e os descartes da seção 3.
 
 ---
 
@@ -301,7 +301,7 @@ Valem para todas as tabelas. Cada um traz a decisão, o porquê, a alternativa d
 
 | Caso | `_is_<entidade>_id_known` | `_key` | Significado | Origens | O que fazer |
 |---|---|---|---|---|---|
-| **(a)** | `false` | `-1` | O `_id` não está na dimensão | **Cadastro atrasado** (o esperado; se corrige sozinho na próxima execução); **FK nula** na origem (hoje 0 pedidos); **cliente apagado por LGPD** (fica em `-1` para sempre); **item sem cabeçalho** (contagem dupla, abaixo) | Esperar a carga seguinte. Se não se resolver, investigar FK nula ou exclusão por LGPD |
+| **(a)** | `false` | `-1` | O `_id` não está na dimensão | **Cadastro atrasado** (o esperado; se corrige sozinho na próxima execução); **FK nula** na origem (hoje 0 pedidos); **cliente apagado por LGPD** (fica em `-1` para sempre, desde que a fonte pare de reenviar o titular; ADR-0012); **item sem cabeçalho** (contagem dupla, abaixo) | Esperar a carga seguinte. Se não se resolver, investigar FK nula ou exclusão por LGPD |
 | **(b)** | `true` | `-1` | O `_id` existe, mas a data do evento cai **fora da vigência total** da entidade: antes do primeiro `valid_from` ou depois do fim da última versão fechada | Exemplo: os 255 itens do princípio 2.9, antes da correção | Verificar se a data do evento é a certa ou se a vigência total no ERP está errada |
 
 - **Um buraco no meio do histórico não gera `-1`.** A dimensão calcula `valid_to = coalesce(lead(valid_from), last_valid_to)`, e a versão anterior se estica, em silêncio, por cima do buraco. Por isso existe a regra `no_gap_to_next_version` na silver (seção 3.9).
@@ -327,8 +327,11 @@ Valem para todas as tabelas. Cada um traz a decisão, o porquê, a alternativa d
   - **barato hoje:** ~6 mi de linhas nos dois fatos. A primeira execução levou 87 s, dos quais 65 s foram arranque.
 - **Por que não uma tabela incremental com `MERGE` agora:** não há problema de volume que a justifique (YAGNI). Além disso, o SDP recusou o *refresh* incremental das materialized views (motivos `INPUT_NOT_IN_DELTA` e `EXCESSIVE_OPERATOR_NESTING` no `planning_information`).
 - **Por que o `_updated_at` não é `current_timestamp()`:** mudaria a cada execução, e toda linha pareceria alterada.
-- **Pendente:** a prova de idempotência (uma segunda execução com números idênticos) fica para o teste do job.
-- **Fonte:** ADR-0006 §6 e §9; ADR-0010 D7 e "Perguntas difíceis".
+- **Idempotência provada (ADR-0012), em duas etapas:**
+  - **reenvio da extração de 2026-10-27:** a silver de fatos, as dimensões e os fatos ficaram com linhas e checksum idênticos, mas a silver de cadastros dobrou (o `DISTINCT` não juntou as cópias; seção 3.5);
+  - **reparo e recarga de 2026-10-28:** com o `GROUP BY ALL`, a bronze não ganhou nenhuma linha, e as 14 tabelas de silver e gold voltaram a ficar idênticas às de antes do reenvio.
+- **Órfã corrigida pela recomputação, medida:** depois de 8 extrações diárias, o cliente `-1` (a) caiu de 1.070 para 254 itens no `fact_sales`, sem reprocesso manual.
+- **Fonte:** ADR-0006 §6 e §9; ADR-0010 D7 e "Perguntas difíceis"; ADR-0012.
 
 ### 2.13 A PII não sai da bronze
 
@@ -339,6 +342,7 @@ Valem para todas as tabelas. Cada um traz a decisão, o porquê, a alternativa d
 - **Por que não mascarar na silver com *column mask*:** a máscara controla a leitura, mas não reduz o que é guardado. Além disso, depende de recurso não verificado no Free Edition.
 - **Por que não guardar um hash do CPF:** sem segredo, o hash é reversível por força bruta (há só ~10⁹ CPFs válidos). Com segredo, é preciso gerir a chave, e nenhuma análise da fatia precisa do documento.
 - **Efeito na modelagem:** o direito ao esquecimento apaga o cliente da bronze e da landing (ADR-0007). Ele some da dimensão, e os fatos ficam em `-1` (a) para sempre, com os valores fiscais intactos.
+  - **Ressalva (ADR-0012):** isso só vale se a fonte parar de reenviar o titular. A extração full diária de `clientes_pdv` traz o cadastro inteiro, e o titular apagado voltaria na extração seguinte. Em produção, o esquecimento começa no ERP (apagamento ou anonimização, ou cláusula da integração). No simulador, não está implementado.
 - **Fonte:** ADR-0004 §5; ADR-0007; ADR-0010 D2.
 
 ### 2.14 Qualidade por expectations: três ações e nunca `NULL`
@@ -444,11 +448,11 @@ Fonte: ADR-0003; ADR-0010 D4 e D5.
 | Regra | Tabela | Expressão | Descartados na carga inicial | Por quê |
 |---|---|---|---|---|
 | `order_date_not_null` | `erp_order_header` | `order_date IS NOT NULL` | 0 | Sem data de negócio, o pedido não entra em "vendas de ontem" |
-| `positive_quantity_and_amount` | `erp_order_item` | `coalesce(quantity > 0 AND net_amount >= 0, false)` | 3.038 | Erro de integração: devolução vem por NF, não por pedido negativo |
-| `positive_quantity` | `erp_invoice_item` | `quantity IS NOT NULL AND quantity > 0` | 16.285 | Item fiscal com quantidade zero é inválido |
+| `positive_quantity_and_amount` | `erp_order_item` | `coalesce(quantity > 0 AND net_amount >= 0, false)` | 3.038 (mais 52 nas extrações diárias de 2026-10-20 a 2026-10-27) | Erro de integração: devolução vem por NF, não por pedido negativo |
+| `positive_quantity` | `erp_invoice_item` | `quantity IS NOT NULL AND quantity > 0` | 16.285 (mais 71 nas extrações diárias de 2026-10-20 a 2026-10-22) | Item fiscal com quantidade zero é inválido |
 
 - **Efeito dos 3.038 itens:** o `fact_sales` soma ~0,1% a menos que o total do cabeçalho do pedido (`order_total_amount`). A diferença é conciliável; a correção definitiva depende do ERP.
-- **Os 16.285 itens de quantidade 0** foram um defeito do gerador: no faturamento parcial de um item com 2 unidades, a 2ª NF ficou com 0. Eles formavam 945 NFs "fantasmas", que somavam −R$ 0,61. A regra começou como aviso, foi ela que revelou o defeito, e depois virou `DROP ROW`.
+- **Os 16.285 itens de quantidade 0** foram um defeito do gerador: no faturamento parcial de um item com 2 unidades, a 2ª NF ficou com 0. Eles formavam 945 NFs "fantasmas", que somavam −R$ 0,61. A regra começou como aviso, foi ela que revelou o defeito, e depois virou `DROP ROW`. A correção do gerador vale só para pedidos cuja 1ª NF sai depois de 2026-10-18: a 2ª NF dos pedidos parciais da carga ainda trouxe 71 itens de quantidade 0, nas extrações de 2026-10-20 a 2026-10-22 (ADR-0012 D10).
 - **Regra nova em streaming table só vale para dados novos.** Para valer no histórico, é preciso um *full refresh* seletivo da silver, reconstruída a partir da bronze. Foi o que se fez em 2026-10-21 com `erp_order_header` e `erp_invoice_item`: a silver de itens de NF passou de 3.033.885 para 3.017.600 linhas.
 
 Fonte: ADR-0008 §5 e "Achados"; ADR-0010 D14 (regras à prova de nulo).
@@ -457,11 +461,15 @@ Fonte: ADR-0008 §5 e "Achados"; ADR-0010 D14 (regras à prova de nulo).
 
 - Cliente, produto e hierarquia são materialized views com o filtro `WHERE _extraction_date = (SELECT max(_extraction_date) FROM bronze.<tabela>)`.
 - **Por quê:** cada extração full já contém o histórico inteiro de versões. A extração mais recente basta.
+- **Reenvio da mesma extração:** a bronze guarda as duas cópias, com a mesma `_extraction_date`. A silver lê `SELECT * EXCEPT (_source_file, _ingested_at) ... GROUP BY ALL`: linhas idênticas nas colunas de negócio viram uma.
+  - **Por que não `DISTINCT`:** na prova de idempotência, `SELECT DISTINCT * EXCEPT (...)` manteve as duas cópias nesta materialized view e dobrou a silver, embora a mesma consulta desse certo no warehouse. A causa não foi confirmada; há duas hipóteses não testadas, e o perfil de consulta do update pode decidir entre elas (ADR-0012 D5).
+  - **O `GROUP BY ALL` é uma correção empírica:** foi validado numa execução, sobre as cópias já na bronze. Risco residual: o `channel: CURRENT` dos pipelines e uma coluna técnica nova na bronze que difira entre as cópias. A verificação do job conta versões repetidas `(id, valid_from)` na silver e pega as duas situações de risco (ADR-0012 D7).
+  - **Reenvio corrigido da mesma data:** não tratado. Se a correção mantiver o `valid_from`, as duas versões ficam na silver, a dimensão fica com uma (seção 4.3), e `no_overlap_with_next_version` e a verificação acusam. Se a correção mudar o início, ou acrescentar ou remover versões, a silver e a dimensão publicam a união das duas cópias até a extração do dia seguinte.
 - **Ganho:** uma regra nova vale para todo o histórico na próxima execução, sem *full refresh* (foi assim com a regra do ADR-0009).
 - **Custo:** os cadastros são recalculados inteiros a cada execução (~73 mil linhas, barato hoje).
 - **A silver de cadastro não é o SCD 2.** Ela é o histórico de versões que o ERP manda, limpo. A escolha dos atributos rastreados e a fusão de versões acontecem na gold (seção 4).
 
-Fonte: ADR-0008 §3; ADR-0006 §2.
+Fonte: ADR-0008 §3; ADR-0006 §2; ADR-0012 D5.
 
 ### 3.6 Cidade padronizada pelo CEP, antes do cálculo de versões
 
@@ -501,7 +509,7 @@ Fonte: ADR-0006 §3; [dicionário](dicionario-de-dados-erp.md) §1.
   - **não** tem todos os dígitos iguais (`000.000.000-00` passa no módulo 11, mas é um "documento-coringa"; ADR-0009);
   - os dois dígitos verificadores batem pelo módulo 11.
 - A expressão inteira fica num `coalesce(..., false)`: documento nulo ou de tamanho errado dá `false`, nunca `NULL`.
-- `document_valid` (aviso) conta **1.336 versões (735 clientes)**.
+- `document_valid` (aviso) conta **1.336 versões (735 clientes)** na carga inicial, e 1.338 em 72.976 versões no job de 2026-10-27 (ADR-0012).
 - **Por que aviso, e não descarte:** o cliente existe e compra. Descartá-lo tiraria vendas reais do fato.
 - **CNPJ alfanumérico** (emitido pela Receita desde julho de 2026): não implementado, porque o contrato do ERP é numérico. Se chegar, a linha passa e só o flag fica errado; a contagem do aviso sobe e sinaliza a mudança.
 - Na `dim_customer`, `is_document_valid` é tipo 1.
@@ -523,7 +531,8 @@ Fonte: ADR-0004 §5; ADR-0008 §3; ADR-0009.
 - **Por que medir, e não corrigir:** a vigência é do ERP (princípio 2.5). Cortar ou preencher por regra inventaria histórico. O certo é medir e levar o caso ao time do ERP.
 - **Por que não `DROP ROW` na versão problemática:** a versão anterior se esticaria por cima da descartada, publicando atributos errados sem métrica.
 - **Por que não `FAIL UPDATE`:** pararia a carga diária por um problema que não invalida o resto.
-- **Hoje:** 0 sobreposições e 0 buracos em cliente (72.650 versões), vendedor (505) e produto (126), medidos fora do pipeline. A contagem no event log aparece na primeira execução do job.
+- **Hoje:** 0 sobreposições e 0 buracos em cliente, vendedor e produto. Na carga inicial, medidos fora do pipeline (72.650, 505 e 126 versões). No event log da primeira execução do job (2026-10-27, update `0ebd1bd3`), 0 nos três cadastros, com 72.976 versões de cliente (ADR-0012).
+- **A regra já pegou um problema real, no reenvio, e não na execução normal:** na prova de reenvio (2026-10-27, update `3e9fdd9c`), com a silver de cadastros dobrada pelo `DISTINCT`, `no_overlap_with_next_version` contou 72.976 em cliente, 505 em hierarquia e 126 em produto: cada versão tinha uma cópia com o mesmo início (ADR-0012 D5). Como regra de aviso, ela só mediu. Por isso a verificação do job passou a contar versões repetidas `(id, valid_from)` na silver, e falha o job nesse caso (ADR-0012 D7).
 - **Limitações:** num empate total de início e fim, a linha marcada pode variar entre execuções (a contagem não varia). Uma versão contida em outra mais longa conta como sobreposição e pode aparecer também como um buraco falso.
 
 Fonte: ADR-0010 D11 (emenda o ADR-0008 e cumpre a regra prometida no ADR-0006).
@@ -631,12 +640,13 @@ Fonte: ADR-0006 §1 e §4; ADR-0010 D9 e D12; [dicionário](dicionario-de-dados-
 | `is_latest` | Última versão do cliente | — | calculada na gold |
 
 **Como o histórico é construído** (*gaps and islands*):
+0. fica uma linha por `(customer_id, valid_from)` (CTE `one_per_start`), com desempate total, salvo empate do hash com nulo deslocado: a vigência que termina mais tarde (a aberta vence), depois a mais atualizada no ERP (`_source_updated_at`), depois o hash dos atributos (ADR-0012 D6);
 1. os atributos rastreados de cada versão da silver viram um `named_struct` (`attrs`);
 2. uma versão abre ilha nova (`opens_version = 1`) quando `lag(attrs) ... IS DISTINCT FROM attrs`. O `IS DISTINCT FROM` trata `NULL` como valor: `NULL` → `NULL` não é mudança, `NULL` → valor é;
 3. a soma acumulada de `opens_version` numera as ilhas (`version_number`);
 4. cada ilha vira uma versão: `valid_from = min(valid_from)` e `last_valid_to = max(valid_to)`;
 5. `valid_to = coalesce(lead(valid_from), last_valid_to)`, e `is_latest` marca a maior `version_number` do cliente;
-6. os atributos de tipo 1 vêm da **última versão** de cada cliente na silver, aberta ou não, e são repetidos em todas as versões. É a primeira linha de `row_number() OVER (PARTITION BY customer_id ORDER BY valid_from DESC, valid_to DESC, _source_updated_at DESC)`, o mesmo desempate da `dim_product` (ADR-0011).
+6. os atributos de tipo 1 vêm da **última versão** de cada cliente, aberta ou não, e são repetidos em todas as versões (ADR-0011). É a linha de `valid_from` mais recente da base `one_per_start` do passo 0. Com um início por linha, a ordem é total, e o tipo 1 sai da mesma linha que o `is_latest` (ADR-0012 D6).
 
 **Exemplo:** três versões na silver.
 
@@ -655,22 +665,29 @@ Fonte: ADR-0006 §1 e §4; ADR-0010 D9 e D12; [dicionário](dicionario-de-dados-
   - com `is_current` e `JOIN` interno, um cliente cuja última versão foi fechada sumiria da dimensão com todo o histórico, e as vendas dele iriam para o `-1` (a), com motivo falso;
   - duas versões abertas com inícios diferentes duplicariam cada `customer_key`, e o `LEFT JOIN` dos fatos duplicaria as linhas (*fan-out*);
   - agora, um cliente encerrado fica com `is_current = false` em todas as linhas e `is_latest = true` na última. As vendas depois do fim da vigência vão para o (b), o motivo certo;
-  - **continua aberto:** duas versões com o **mesmo início** e atributos rastreados diferentes ainda geram a mesma `customer_key` (seção 8);
+  - **mesmo início, resolvido pelo ADR-0012 D6:** duas versões com o mesmo `valid_from` gerariam a mesma `customer_key`. Agora a dimensão fica com uma (passo 0). Quem detecta: `no_overlap_with_next_version` mede o caso na silver, sem alertar; a tarefa `verify_uniqueness` falha o job quando a silver tem versões repetidas `(customer_id, valid_from)` e quando a `customer_key` se repete por outro caminho. Na prova de idempotência, com a silver de cadastros dobrada, a dimensão ficou idêntica;
+  - **desempate do passo 0:** a vigência que termina mais tarde vem antes da atualização no ERP, de propósito: o cliente mantém uma versão vigente. O custo é que uma correção mais nova que fechou a versão perde; a incoerência fica medida;
+  - **`valid_from` nulo:** o `xxhash64` ignora argumentos nulos (testado em 2026-10-28), e o `PARTITION BY` do passo 0 junta os nulos numa partição. Duas versões do mesmo cliente com `valid_from` nulo viram **uma** na dimensão: prevenção silenciosa, em que uma versão some e a `customer_key` não se repete. Quem detecta são as contagens de versões repetidas `(id, valid_from)` da verificação do job, cujo `GROUP BY` também agrupa os nulos. Hoje há 0 nulos; `valid_interval` só avisa (ADR-0012 D6);
   - medido em 2026-10-22: 0 clientes sem versão aberta, 0 com duas abertas, 0 com a última versão fechada e 0 com atributo tipo 1 diferente entre as duas regras. Um teste com casos literais confirmou os dois defeitos na lógica antiga e a correção na nova. Depois do refresh (`9430ea`), a dimensão ficou idêntica: 47.167 linhas e o mesmo checksum.
 - **Inativado não é encerrado:** `status = 'INATIVO'` é tipo 1, e vigência fechada é outra coisa. Em 2026-10-22, os 1.234 clientes `INATIVO` tinham todos versão aberta: o ERP inativa com uma versão nova e não fecha a vigência. Não espere clientes `INATIVO` no `-1` (b) (ADR-0011).
 - **Por que não SCD 2 em todos os atributos:** ver princípio 2.4.
 
 **Membro `-1`:** `customer_id = 'N/A'`, `trade_name = 'CLIENTE DESCONHECIDO'`, canal e segmento `'DESCONHECIDO'`, cidade, UF e região `'DESCONHECIDA'`, vigência `[1900-01-01, 9999-12-31)`, `is_current` e `is_latest` verdadeiros.
 
-**Números de hoje:**
+**Números da carga inicial:**
 - 39.773 clientes e 72.650 versões na silver → 47.166 versões na dimensão;
 - na silver, 17.429 clientes com 1 versão, 13.838 com 2 e 8.506 com 3 ou mais;
 - 1.336 versões (735 clientes) com documento inválido;
 - 227 clientes ainda fora do cadastro (313 pedidos): no `fact_sales`, 1.070 itens em `-1` (a); no `fact_invoice`, 1.084.
 
+**Depois de 8 extrações diárias (2026-10-27, ADR-0012):**
+- 39.962 clientes e 72.976 versões na silver → 47.387 linhas na dimensão, com o `-1`;
+- 189 dos 227 órfãos já tinham chegado no cadastro; os 38 restantes chegam até 2026-10-29. Restam 254 itens em `-1` (a) no `fact_sales` e 256 no `fact_invoice`;
+- 1.338 versões com documento inválido (aviso `document_valid`).
+
 **Pegadinha:** a região geográfica **não** é a região do dashboard. As duas redes nacionais têm sede em SP, então o Sudeste fica com 56% do volume geográfico. Na visão comercial, esse volume é de CONTAS NACIONAIS. A região do dashboard vem da `dim_sales_rep` (seção 4.4).
 
-Fonte: ADR-0006 (tabela da Decisão, §2, §8); ADR-0008 §4; ADR-0010 D1b; ADR-0011; [dicionário](dicionario-de-dados-erp.md) §2 e §3.1.
+Fonte: ADR-0006 (tabela da Decisão, §2, §8); ADR-0008 §4; ADR-0010 D1b; ADR-0011; ADR-0012 D6; [dicionário](dicionario-de-dados-erp.md) §2, §3.1 e §5.
 
 ### 4.4 `dim_sales_rep`
 
@@ -683,7 +700,7 @@ Fonte: ADR-0006 (tabela da Decisão, §2, §8); ADR-0008 §4; ADR-0010 D1b; ADR-
 |---|---|---|---|
 | `sales_rep_key` | Chave substituta da versão | — | `xxhash64(sales_rep_id, valid_from)` |
 | `sales_rep_id` | Chave durável (`cod_vendedor`) | durável | silver |
-| `sales_rep_name` | Nome do vendedor, o da versão mais recente | 1 | `max_by(sales_rep_name, valid_from)` |
+| `sales_rep_name` | Nome do vendedor, o da versão mais recente | 1 | linha de `valid_from` mais recente da base `one_per_start` (ADR-0012 D6) |
 | `version_number` | Número da versão | — | calculado na gold |
 | `supervisor_id`, `supervisor_name` | Supervisor da equipe | **2** | silver |
 | `manager_id`, `manager_name` | Gerente regional | **2** | silver |
@@ -692,7 +709,7 @@ Fonte: ADR-0006 (tabela da Decisão, §2, §8); ADR-0008 §4; ADR-0010 D1b; ADR-
 | `is_current` | Vigência aberta | — | calculada na gold |
 | `is_latest` | Última versão do vendedor, mesmo sem vigência aberta | — | calculada na gold |
 
-- **Como o histórico é construído:** o mesmo *gaps and islands* da `dim_customer`, com os cinco atributos rastreados no `named_struct`. Os nomes do supervisor e do gerente fazem parte do conjunto rastreado.
+- **Como o histórico é construído:** o mesmo *gaps and islands* da `dim_customer`, inclusive o passo 0 (uma linha por `(sales_rep_id, valid_from)`, ADR-0012 D6), com os cinco atributos rastreados no `named_struct`. Os nomes do supervisor e do gerente fazem parte do conjunto rastreado.
 - **Tratamentos da silver que ela usa:** vigência pela data de início no ERP, e não pela data de registro (`registered_date`). A silver guarda também `is_retroactive` (`dt_registro > dt_inicio_vigencia`), só para auditoria. As regras de vigência estão na seção 3.9.
 - **Membro `-1`:** `sales_rep_id = 'N/A'`, `sales_rep_name = 'VENDEDOR DESCONHECIDO'`, `commercial_region = 'DESCONHECIDA'`, vigência `[1900-01-01, 9999-12-31)`.
 
@@ -708,12 +725,12 @@ Fonte: ADR-0006 (tabela da Decisão, §2, §8); ADR-0008 §4; ADR-0010 D1b; ADR-
 
 **Números de hoje:**
 - 505 versões, 146 vendedores e 140 com versão vigente na silver; 21 supervisores;
-- linhas na dimensão depois da fusão: não medido;
+- linhas na dimensão: 506 com o `-1`, todas com `sales_rep_key` distinta (medido em 2026-10-23, ADR-0012);
 - vendedor `-1` nos fatos: 0 (a) e 0 (b) nos dois fatos.
 
 **Pegadinha:** filtrar `is_current` para a visão "como é hoje" tira os 6 desligados do resultado. Use `is_latest`.
 
-Fonte: ADR-0006 (tabela da Decisão, §7); ADR-0008 §4; ADR-0010 D1 e D11; [dicionário](dicionario-de-dados-erp.md) §3.3.
+Fonte: ADR-0006 (tabela da Decisão, §7); ADR-0008 §4; ADR-0010 D1 e D11; ADR-0012 D6; [dicionário](dicionario-de-dados-erp.md) §3.3.
 
 ---
 
@@ -778,7 +795,9 @@ Os dois em `commercial.gold`, como materialized views do pipeline `commercial`. 
 | Vendedor `-1` (a) / (b) | 0 / 0 |
 | Produto `-1` | 0 |
 
-Fonte: ADR-0003; ADR-0006 §5, §6 e §9; ADR-0010 (contrato, D4, D6, D7, D9, D10 e resultados).
+**Depois de 8 extrações diárias (2026-10-27, ADR-0012):** 2.987.790 linhas, iguais às da silver (a verificação do job confere); data mais recente 2026-10-26 (D-1); cliente `-1` (a) 254.
+
+Fonte: ADR-0003; ADR-0006 §5, §6 e §9; ADR-0010 (contrato, D4, D6, D7, D9, D10 e resultados); ADR-0012 (resultados).
 
 ### 5.2 `fact_invoice`
 
@@ -851,7 +870,9 @@ Fonte: ADR-0003; ADR-0006 §5, §6 e §9; ADR-0010 (contrato, D4, D6, D7, D9, D1
 | Produto `-1` | 0 |
 | Volume | não medido |
 
-Fonte: ADR-0003; ADR-0006 §9; ADR-0010 (contrato, D1 a D10 e resultados).
+**Depois de 8 extrações diárias (2026-10-27, ADR-0012):** 3.070.233 linhas, iguais às da silver (a verificação do job confere); cliente `-1` (a) 256.
+
+Fonte: ADR-0003; ADR-0006 §9; ADR-0010 (contrato, D1 a D10 e resultados); ADR-0012 (resultados).
 
 ### 5.3 Os dois fatos juntos
 
@@ -883,7 +904,7 @@ Os totais não batem, e não devem bater. Entre um e outro há pedidos cancelado
 
 ## 6. Como consultar
 
-Os exemplos usam os nomes do workspace (`core`, `commercial`). No código dos pipelines, os catálogos vêm de `${catalog_core}` / `${catalog_commercial}`. Os dados vão de 2025-04-19 a 2026-10-18; o D-1 da carga inicial é 2026-10-18.
+Os exemplos usam os nomes do workspace (`core`, `commercial`). No código dos pipelines, os catálogos vêm de `${catalog_core}` / `${catalog_commercial}`. A carga inicial vai de 2025-04-19 a 2026-10-18; desde então, o job acrescenta um dia por extração (em 2026-10-27, os dados chegavam a 2026-10-26). Os exemplos usam datas da carga inicial.
 
 ### 6.1 "Como era" e "como é hoje"
 
@@ -996,7 +1017,7 @@ SELECT * FROM s FULL OUTER JOIN i USING (commercial_region);
 |---|---|---|
 | Juntar com a dimensão pelo `_id` sem `is_latest` | Cada linha do fato se multiplica pelo número de versões do `_id` | Pela `_key` ("como era") ou pelo `_id` com `AND is_latest` ("como é hoje") |
 | Usar `is_current` no "como é hoje" | Os 6 vendedores desligados ficam sem região (R$ 6,6 mi em jan–jun/2026) | `is_latest` |
-| `INNER JOIN` pelo `_id` no "como é hoje" | As linhas (a) somem: 1.070 itens no `fact_sales` | `LEFT JOIN` + `coalesce` |
+| `INNER JOIN` pelo `_id` no "como é hoje" | As linhas (a) somem: 1.070 itens no `fact_sales` na carga inicial, 254 em 2026-10-27 | `LEFT JOIN` + `coalesce` |
 | `BETWEEN valid_from AND valid_to` numa junção por data | No dia da troca, a linha casa com duas versões e é contada duas vezes | `data >= valid_from AND data < valid_to` |
 | Média de preço por linha: `avg(net_amount / quantity)` | Uma caixa pesa o mesmo que 500 | `sum(net_amount) / sum(quantity)` |
 | Somar `quantity` de produtos diferentes | Caixa de lata + barril | `volume_hl` |
@@ -1010,41 +1031,41 @@ SELECT * FROM s FULL OUTER JOIN i USING (commercial_region);
 
 ## 7. Qualidade no modelo
 
-Todas as expectations que afetam dimensões e fatos. "Aviso" = só mede. As tabelas `erp_*` e `ref_*` ficam em `core.silver`; os fatos, em `commercial.gold`. As dimensões não têm expectations próprias: as regras dos cadastros ficam na silver. As contagens são da carga inicial (ADR-0008, ADR-0009, ADR-0010); as regras que entraram ou mudaram em 2026-10-21 foram medidas fora do pipeline e aparecem no event log na primeira execução do job.
+Todas as expectations que afetam dimensões e fatos. "Aviso" = só mede. As tabelas `erp_*` e `ref_*` ficam em `core.silver`; os fatos, em `commercial.gold`. As dimensões não têm expectations próprias: as regras dos cadastros ficam na silver. A coluna "Carga inicial" vem do ADR-0008, do ADR-0009 e do ADR-0010; as regras que entraram ou mudaram em 2026-10-21 foram medidas fora do pipeline. A coluna "Job (2026-10-27)" vem do event log da primeira execução do job, com 8 extrações diárias (update `0ebd1bd3` do `core` e `55aace92` do `commercial`, soma de todos os lotes de cada fluxo; ADR-0012). Nela, as regras da silver de fatos (streaming) contam só as linhas novas das 8 extrações; as das materialized views (cadastros e fatos da gold) contam a tabela inteira.
 
-| Tabela | Regra | Ação | Por quê | Contagem atual |
-|---|---|---|---|---|
-| `erp_order_header` | `order_id_not_null` | `FAIL UPDATE` | Sem chave não há dedup nem junção | 0 |
-| `erp_order_header` | `order_date_not_null` | `DROP ROW` | Sem data, o pedido não entra em "vendas de ontem" | 0 |
-| `erp_order_header` | `known_status` | aviso | Status novo no ERP é mudança de contrato | 0 |
-| `erp_order_item` | `order_item_key_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| `erp_order_item` | `positive_quantity_and_amount` | `DROP ROW` | Erro de integração; devolução vem por NF | 3.038 |
-| `erp_invoice_header` | `invoice_key_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| `erp_invoice_header` | `known_cfop` | aviso | Operação fiscal nova precisa de regra | 0 |
-| `erp_invoice_header` | `return_has_original_invoice` | aviso | Devolução deve referenciar a venda | 0 |
-| `erp_invoice_item` | `invoice_item_key_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| `erp_invoice_item` | `known_cfop` | aviso | Operação fiscal nova precisa de regra | 0 |
-| `erp_invoice_item` | `positive_quantity` | `DROP ROW` | Item fiscal com quantidade zero é inválido | 16.285 |
-| `erp_customer` | `customer_id_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| `erp_customer` | `document_valid` | aviso | O cliente existe e compra; o flag vai para a dimensão | 1.336 versões (735 clientes) |
-| `erp_customer` | `postal_code_known` | aviso | Cidade ficaria nula; referência incompleta | 0 |
-| `erp_product` | `product_id_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| `erp_product` | `positive_volume` | aviso | Mede volume ou pack não positivo, a base do `liters_per_sku` | não registrada |
-| `erp_sales_hierarchy` | `sales_rep_id_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| `erp_sales_hierarchy` | `known_region` | aviso | Mede região comercial fora das 6 do contrato | não registrada |
-| `ref_postal_code` | `postal_code_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 |
-| cadastros (3) | `valid_interval` | aviso | Vigência invertida ou sem início é erro de cadastro | 0 |
-| cadastros (3) | `no_overlap_with_next_version` | aviso | A dimensão cortaria a versão em silêncio | 0 |
-| cadastros (3) | `no_gap_to_next_version` | aviso | A dimensão esticaria a versão em silêncio | 0 |
-| `fact_sales`, `fact_invoice` | `order_header_found` | aviso | Item sem o pedido (fica com data ou vendedor nulo) | 0 / 0 |
-| `fact_invoice` | `invoice_header_found` | aviso | Item de NF sem a NF | 0 |
-| `fact_invoice` | `known_invoice_type` | aviso | CFOP sem regra, com medidas nulas | 0 |
-| `fact_sales` | `amounts_add_up` | aviso | Bruto − desconto ≠ líquido | 0 |
-| `fact_sales`, `fact_invoice` | `customer_id_in_dimension` | aviso | Cliente (a) | 1.070 / 1.084 |
-| `fact_sales` / `fact_invoice` | `customer_version_valid_on_order_date` / `..._on_issue_date` | aviso | Cliente (b) | 0 / 0 |
-| `fact_sales`, `fact_invoice` | `sales_rep_id_in_dimension` | aviso | Vendedor (a) | 0 / 0 |
-| `fact_sales`, `fact_invoice` | `sales_rep_version_valid_on_order_date` | aviso | Vendedor (b) | 0 / 0 |
-| `fact_sales`, `fact_invoice` | `product_id_in_dimension` | aviso | Produto (a); o produto não tem (b), porque a junção não usa data | 0 / 0 |
+| Tabela | Regra | Ação | Por quê | Carga inicial | Job (2026-10-27) |
+|---|---|---|---|---|---|
+| `erp_order_header` | `order_id_not_null` | `FAIL UPDATE` | Sem chave não há dedup nem junção | 0 | 0 |
+| `erp_order_header` | `order_date_not_null` | `DROP ROW` | Sem data, o pedido não entra em "vendas de ontem" | 0 | 0 |
+| `erp_order_header` | `known_status` | aviso | Status novo no ERP é mudança de contrato | 0 | 0 |
+| `erp_order_item` | `order_item_key_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| `erp_order_item` | `positive_quantity_and_amount` | `DROP ROW` | Erro de integração; devolução vem por NF | 3.038 | 52 descartadas, 55.951 aprovadas |
+| `erp_invoice_header` | `invoice_key_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| `erp_invoice_header` | `known_cfop` | aviso | Operação fiscal nova precisa de regra | 0 | 0 |
+| `erp_invoice_header` | `return_has_original_invoice` | aviso | Devolução deve referenciar a venda | 0 | 0 |
+| `erp_invoice_item` | `invoice_item_key_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| `erp_invoice_item` | `known_cfop` | aviso | Operação fiscal nova precisa de regra | 0 | 0 |
+| `erp_invoice_item` | `positive_quantity` | `DROP ROW` | Item fiscal com quantidade zero é inválido | 16.285 | 71 descartadas, 52.633 aprovadas (extrações de 2026-10-20 a 2026-10-22, ADR-0012 D10) |
+| `erp_customer` | `customer_id_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| `erp_customer` | `document_valid` | aviso | O cliente existe e compra; o flag vai para a dimensão | 1.336 versões (735 clientes) | 1.338 em 72.976 versões |
+| `erp_customer` | `postal_code_known` | aviso | Cidade ficaria nula; referência incompleta | 0 | 0 |
+| `erp_product` | `product_id_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| `erp_product` | `positive_volume` | aviso | Mede volume ou pack não positivo, a base do `liters_per_sku` | não registrada | 0 |
+| `erp_sales_hierarchy` | `sales_rep_id_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| `erp_sales_hierarchy` | `known_region` | aviso | Mede região comercial fora das 6 do contrato | não registrada | 0 |
+| `ref_postal_code` | `postal_code_not_null` | `FAIL UPDATE` | Quebra de contrato | 0 | 0 |
+| cadastros (3) | `valid_interval` | aviso | Vigência invertida ou sem início é erro de cadastro | 0 | 0 |
+| cadastros (3) | `no_overlap_with_next_version` | aviso | A dimensão cortaria a versão em silêncio; duas versões com o mesmo início também contam (a dimensão fica com uma, ADR-0012 D6) | 0 | 0 nos três. As contagens 72.976 (cliente), 505 (hierarquia) e 126 (produto) são do **reenvio** (update `3e9fdd9c`, silver dobrada pelo `DISTINCT`; ADR-0012 D5), e não da execução normal |
+| cadastros (3) | `no_gap_to_next_version` | aviso | A dimensão esticaria a versão em silêncio | 0 | 0 nos três |
+| `fact_sales`, `fact_invoice` | `order_header_found` | aviso | Item sem o pedido (fica com data ou vendedor nulo) | 0 / 0 | 0 / 0 |
+| `fact_invoice` | `invoice_header_found` | aviso | Item de NF sem a NF | 0 | 0 |
+| `fact_invoice` | `known_invoice_type` | aviso | CFOP sem regra, com medidas nulas | 0 | 0 |
+| `fact_sales` | `amounts_add_up` | aviso | Bruto − desconto ≠ líquido | 0 | 0 |
+| `fact_sales`, `fact_invoice` | `customer_id_in_dimension` | aviso | Cliente (a) | 1.070 / 1.084 | 254 / 256 |
+| `fact_sales` / `fact_invoice` | `customer_version_valid_on_order_date` / `..._on_issue_date` | aviso | Cliente (b) | 0 / 0 | 0 / 0 |
+| `fact_sales`, `fact_invoice` | `sales_rep_id_in_dimension` | aviso | Vendedor (a) | 0 / 0 | 0 / 0 |
+| `fact_sales`, `fact_invoice` | `sales_rep_version_valid_on_order_date` | aviso | Vendedor (b) | 0 / 0 | 0 / 0 |
+| `fact_sales`, `fact_invoice` | `product_id_in_dimension` | aviso | Produto (a); o produto não tem (b), porque a junção não usa data | 0 / 0 | 0 / 0 |
 
 **Por que as regras dos fatos ficam no próprio fato, e não numa view intermediária:**
 - a documentação oficial diz que as métricas de expectation de uma view podem não estar disponíveis (*"might not be available"*);
@@ -1060,15 +1081,23 @@ Todas as expectations que afetam dimensões e fatos. "Aviso" = só mede. As tabe
 |---|---|---|---|
 | **Recomputação sem incremental** | Fatos (~6 mi de linhas) e cadastros (~73 mil) recalculados inteiros a cada execução. O SDP recusou o incremental (`INPUT_NOT_IN_DELTA`, `EXCESSIVE_OPERATOR_NESTING`) | ADR-0006, ADR-0008, ADR-0010 | Em 10x (~60 mi), 5 a 10 min de processamento, estimados. Em 100x, incremental obrigatório: fatos como streaming tables com `AUTO CDC` e reprocesso do `-1`, ou MVs intermediárias |
 | **Event log no schema do domínio** | Tabela `event_log_*` em `commercial.gold` (e em `core.bronze`). Com o `GRANT` no catálogo, todo consumidor lê o event log | ADR-0010 | Schema técnico na fatia 2 (observabilidade) |
-| **Unicidade sem verificação automática** | O `LEFT JOIN` só conserva a contagem se a `_key` for única. Hoje: 0 duplicatas, medidas à mão | ADR-0010 D13 | Tarefa final do job `serra_azul_daily` |
-| **Idempotência sem prova** | A segunda execução com números idênticos não foi feita | ADR-0010 | Teste do job |
+| **Unicidade sem verificação automática (resolvido)** | Nenhum. A tarefa `verify_uniqueness` confere, a cada execução, 10 contagens: o grão dos fatos, a `_key` das três dimensões, a contagem de cada fato contra a silver e as versões repetidas `(id, valid_from)` na silver dos três cadastros. Falha o job se algo der diferente de 0. Em 2026-10-27/28, com as 7 primeiras: 7 zeros; as 3 novas deram 0 no warehouse em 2026-10-28 e rodam na próxima execução | ADR-0010 D13 | **Entregue pelo [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) D7**. Em produção, também no CI |
+| **Verificação depois da publicação** | A `verify_uniqueness` é alarme, e não portão: roda depois que os pipelines publicaram. A duplicação que ela acha já chegou ao dashboard, e o job vermelho fica sem notificação até a fatia 2 | ADR-0012 D6 e D7 | Em produção: *write-audit-publish* (fatos em *staging*, verificação, promoção) para os fatos do SLA das 8h |
+| **Idempotência sem prova (resolvido)** | Nenhum. Reenvio da extração de 2026-10-27 absorvido e recarga do mesmo dia sem duplicata, com linhas e checksum idênticos | ADR-0010 | **Provada pelo [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md)** |
+| **Reenvio corrigido da mesma data** | Só o reenvio idêntico é absorvido na silver de cadastros. Se a correção mantiver o `valid_from`, a dimensão fica com uma versão, e a regra de aviso e a verificação acusam. Se mudar o início, ou acrescentar ou remover versões, silver e dimensão publicam a união até a extração do dia seguinte | ADR-0012 D5 | Fatia 3 (reenvio e contratos); em produção, versão ou carimbo por reenvio |
+| **Causa do `DISTINCT` na materialized view não confirmada** | `SELECT DISTINCT * EXCEPT (...)` manteve as duas cópias do reenvio no pipeline, mas não no warehouse. Trocado por `GROUP BY ALL`, uma correção empírica | ADR-0012 D5 | Abrir o perfil de consulta do update `3e9fdd9c` no Query History (sem custo de compute) para confirmar uma das duas hipóteses |
+| **Ordenação da `dim_product` não total** | Num empate de `valid_from`, `valid_to` e `_source_updated_at`, a linha escolhida pode variar entre recálculos. Não recebeu o hash como último critério porque não há caso de mesmo início medido em produto | ADR-0010 D12; ADR-0012 D6 | Dívida. Gatilho: o primeiro caso de produto com versões de mesmo início |
+| **`xxhash64` ignora argumentos nulos** | Testado em 2026-10-28: `xxhash64(NULL, 'a') = xxhash64('a')`. Duas versões do mesmo id com `valid_from` nulo caem na mesma partição do `one_per_start` e viram uma na dimensão, em silêncio: uma versão some, e a `_key` não se repete (hoje 0 nulos; `valid_interval` só avisa). No desempate por hash, valores deslocados em relação a um nulo empatam sempre. O tipo também muda o hash (`INT` × `BIGINT`) | ADR-0012 D6 | Quem detecta o `valid_from` nulo são as contagens de versões repetidas `(id, valid_from)` da verificação do job, e não a `_key` repetida. Manter tipos estáveis nas chaves |
+| **Extração diária sem cadastro novo** | Depois de 2026-10-29, nenhum cadastro chega: as extrações diárias não exercitam SCD 2 novo nem membro `-1` novo de cliente | ADR-0012 D1 | Simplificação do simulador; em produção, o ERP manda o que mudou |
 | **ERP que reescreve vigência passada** | Um mês já reportado pode mudar | ADR-0006 | Se o negócio exigir relatórios fechados: *snapshot* mensal congelado |
-| **LGPD: `-1` para sempre** | O cliente esquecido fica em `-1` (a), e o (a) deixa de ser só "cadastro atrasado" | ADR-0010 D2 | Desejado: valores fiscais sem PII |
+| **LGPD: `-1` para sempre** | O cliente esquecido fica em `-1` (a), e o (a) deixa de ser só "cadastro atrasado". **Só vale desde que a fonte pare de reenviar o titular:** a extração full diária de `clientes_pdv` traz o cadastro inteiro, e o titular apagado voltaria na extração seguinte para landing, bronze, silver e dimensão | ADR-0010 D2; ressalva no ADR-0012 | Desejado: valores fiscais sem PII. Em produção: apagamento ou anonimização no ERP, ou cláusula da integração. No simulador, não implementado (gatilho: o primeiro pedido de esquecimento, ou a fatia 5) |
 | **Contagem dupla nas regras do `-1`** | Item sem cabeçalho conta em mais de uma regra; o (a) puro sai por subtração | ADR-0010 D2 | Tornar os motivos exclusivos, se atrapalhar a leitura |
 | **Tabela de preço fora da fatia 1** | Sem análise contra o preço de lista; o desconto vem do item da NF | ADR-0006 §10 | Entra quando a análise for pedida |
 | **Buraco legítimo na hierarquia** | Um vendedor recontratado teria a versão anterior esticada por cima do buraco | ADR-0010 D11 | Decidir no primeiro caso real (hoje 0) |
 | **Atributos tipo 1 da `dim_customer` pela versão aberta (resolvido)** | Nenhum. Os atributos tipo 1 vinham de `silver.erp_customer WHERE is_current`, com `JOIN` interno: um cliente sem versão aberta sumiria da dimensão **com todas as versões** (vendas no `-1` (a)), e duas versões abertas duplicariam a `customer_key`. Medido em 2026-10-22: 0 clientes sem versão aberta, 0 com duas abertas e 0 com a última versão fechada | Achado na escrita deste documento (2026-10-21) | **Resolvido pelo [ADR-0011](adr/0011-dim-customer-tipo-1-pela-ultima-versao.md)** (2026-10-22): tipo 1 pela última versão de cada cliente, como a `dim_product` (ADR-0010 D12). Refresh `9430ea`: dimensão idêntica (47.167 linhas, mesmo checksum) |
-| **Mesmo início duplica a `_key` (`dim_customer` e `dim_sales_rep`)** | Duas versões da silver com o mesmo `customer_id` e `valid_from` e atributos rastreados diferentes abrem duas versões com a mesma `customer_key = xxhash64(customer_id, valid_from)`; uma fica com o intervalo vazio `[d, d)`, e a escolha da aberta e da `is_latest` não é determinística. A junção por vigência não duplica; a junção pela `_key` ("como era") duplica. A `dim_sales_rep` usa a mesma chave e o mesmo cálculo de versões, então tem o mesmo caminho (`sales_rep_key`). Hoje: 0 nas duas, contado por `no_overlap_with_next_version` | Chave do ADR-0006 §4; registrado no ADR-0011 | Prevenir (deduplicação determinística na dimensão) ou só detectar (ADR-0010 D13, a entregar com o job): decidir no ADR do job |
+| **Mesmo início duplica a `_key` (`dim_customer` e `dim_sales_rep`) (resolvido)** | Nenhum. Antes, duas versões da silver com o mesmo id e `valid_from` abriam duas versões com a mesma `_key = xxhash64(id, valid_from)`, e a junção pela `_key` ("como era") duplicava linhas do fato. Agora as duas dimensões ficam com uma linha por `(id, valid_from)`, com desempate total (salvo empate do hash com nulo deslocado), antes do cálculo de versões. Na prova de reenvio, com a silver de cadastros dobrada, as dimensões ficaram idênticas | Chave do ADR-0006 §4; registrado no ADR-0011 | **Resolvido pelo [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) D6:** prevenir na dimensão (`one_per_start`) e detectar na silver (`no_overlap_with_next_version`) e no job (`verify_uniqueness`) |
+| **Arquivo truncado na landing** | Sem arquivo-marcador por extração. O simulador trata qualquer `.parquet` como extração existente; o arquivo truncado faria o pipeline `core` falhar. Reparo manual: depois de um timeout, apagar a extração incompleta antes de rodar de novo; no meio da série, regerar a extração numa pasta de ensaio e copiar por cima. Análise do código e da documentação, não testada | ADR-0012 | Mitigação proposta: conferir o rodapé `PAR1` antes de ativar o agendamento. Em produção: `_SUCCESS` ou manifesto por extração |
+| **Contagens 8 a 10 e o job vermelho** | Um caso real de mesmo início vindo do ERP ficaria em toda extração full e deixaria o job vermelho todo dia, embora a dimensão já o contenha, mascarando a próxima violação real. Hoje impossível: 0 casos, e o simulador não cria versões novas | ADR-0012 | Separar a severidade (cópia idêntica salvo `_next_valid_from` falha; mesmo início com atributos diferentes vira aviso). Gatilho: o simulador gerar versões de cadastro, ou a fatia 2 |
 | **`_updated_at` e órfã resolvida** | Uma troca de chave causada só pela dimensão não muda o `_updated_at`; um consumidor incremental guiado por ele perde a correção | ADR-0010 D7 | — |
 | **Sem quarentena** | Linhas descartadas ficam só como métrica (`DROP ROW`) | ADR-0008 | Fatia 3 (contratos e quarentena) |
 | **Fonte atrasada** | Se o extrato de pedidos ou NFs atrasar, o D-1 fica incompleto **sem aviso** | ADR-0010 "Perguntas difíceis" | Detecção de *freshness* na fatia 2 |
@@ -1127,7 +1156,8 @@ Só o que muda a modelagem.
 | [ADR-0009](adr/0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md) | Documento com dígitos repetidos é inválido; CNPJ alfanumérico adiado |
 | [ADR-0010](adr/0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) | Pipeline `commercial`: data da versão, motivo do `-1`, sinal, bruto, regras de vigência, nunca `NULL` |
 | [ADR-0011](adr/0011-dim-customer-tipo-1-pela-ultima-versao.md) | Atributos tipo 1 da `dim_customer` pela última versão de cada cliente, e não pela versão aberta |
+| [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) | Job diário: extração simulada e determinística do ERP, landing sem sobrescrita, cadastros à prova de reenvio, mesmo início prevenido nas dimensões e verificação de unicidade |
 | [Convenções](convencoes.md) | Regras em vigor em uma página |
-| [Dicionário de dados do ERP](dicionario-de-dados-erp.md) | Colunas da fonte, sujeiras e contagens da carga inicial |
+| [Dicionário de dados do ERP](dicionario-de-dados-erp.md) | Colunas da fonte, sujeiras e contagens da carga inicial e da extração diária |
 | [Caso de negócio](caso-de-negocio.md) | Empresa, stakeholders, fontes e requisitos |
 | [Revisão de 2026-10-19](revisao-2026-10-19.md) | Releitura das decisões da fase 0 e lições de método |

@@ -1,6 +1,6 @@
 # ADR-0008: Construir o pipeline core com bronze fiel, deduplicação por AUTO CDC na silver, cadastros recalculados da última extração e qualidade por expectations
 
-- **Status:** aceito — emendado pelo [ADR-0009](0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md) (validação do documento) e pelo [ADR-0010](0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) (regras de vigência sobreposta e buraco; regras à prova de nulo, com as de descarte passando a descartar e contar o nulo)
+- **Status:** aceito — emendado pelo [ADR-0009](0009-validacao-de-documento-digitos-repetidos-e-cnpj-alfanumerico.md) (validação do documento) e pelo [ADR-0010](0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) (regras de vigência sobreposta e buraco; regras à prova de nulo, com as de descarte passando a descartar e contar o nulo) e pelo [ADR-0012](0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) (§3: a silver de cadastros junta as linhas idênticas da mesma extração, para absorver o reenvio; "o gerador foi corrigido para as próximas execuções" refinado: a regra corrigida do faturamento parcial vale só para pedidos cuja 1ª NF sai depois de 2026-10-18, e as extrações de 2026-10-20 a 2026-10-22 trazem mais 71 itens de quantidade 0)
 - **Data:** 2026-10-20
 - **Fatia:** fatia 1 — Comercial
 - **Decisor:** Engenheiro de Dados Sênior (Claude) · **Acompanhamento:** usuário (pode vetar)

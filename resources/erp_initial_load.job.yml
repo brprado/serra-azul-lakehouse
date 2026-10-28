@@ -1,5 +1,8 @@
-# Carga inicial sintética do ERP (18 meses) na landing. Execução única e determinística:
-# rodar de novo sobrescreve com os mesmos dados. Especificação: docs/caso-de-negocio.md, seção 5.1.
+# Carga inicial sintética do ERP (18 meses) na landing. Execução única e determinística. Especificação:
+# docs/caso-de-negocio.md, seção 5.1.
+# NÃO RODAR DE NOVO NA LANDING REAL (já rodou em 2026-10-19). Os dados sairiam iguais, mas em arquivos part-<uuid> com
+# nomes novos: o Auto Loader rastreia por caminho e a bronze leria toda a carga outra vez (append-only, sem full
+# refresh). Para testar o gerador, use --output-root numa pasta que nenhuma bronze lê.
 resources:
   jobs:
     erp_initial_load:
@@ -25,4 +28,4 @@ resources:
           spec:
             client: "4"
             dependencies:
-              - faker>=33,<38
+              - faker==37.12.0  # versão exata: outra versão do Faker gera outros nomes e endereços para a mesma semente

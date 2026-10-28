@@ -6,18 +6,33 @@
 -- O valor atual do tipo 1 vem da última versão de cada cliente, mesmo sem vigência aberta (a regra do is_latest,
 -- ADR-0008), e não da versão is_current: com is_current, um cliente cuja última versão foi fechada sumiria da dimensão
 -- com todo o histórico (vendas no -1), e duas versões abertas duplicariam cada customer_key (ADR-0011).
--- Desempate igual ao da dim_product (ADR-0010 D12).
+-- Mesmo início (ADR-0012): duas versões da silver com o mesmo customer_id e o mesmo valid_from abririam duas ilhas com a
+-- mesma customer_key = xxhash64(customer_id, valid_from), e a junção do fato pela chave duplicaria linhas. Antes de
+-- calcular as versões, fica uma linha por (customer_id, valid_from), com desempate determinístico e total: a vigência
+-- que termina mais tarde (a aberta vence), depois a mais atualizada no ERP, depois o hash dos atributos (só empata
+-- linha de conteúdo igual, salvo colisão de 64 bits e valores deslocados em relação a um nulo, que o xxhash64 ignora;
+-- ADR-0012). A silver continua contando o caso (no_overlap_with_next_version).
+-- Com um início por linha, a ordem por valid_from é total: o is_latest e o tipo 1 saem da mesma linha.
 CREATE OR REFRESH MATERIALIZED VIEW gold.dim_customer
 COMMENT 'Dimensão conformada de cliente: uma linha por versão rastreada, vigência [valid_from, valid_to), chave determinística + membro -1.'
 AS
-WITH tracked AS (
+WITH one_per_start AS (
+  SELECT *
+  FROM silver.erp_customer
+  QUALIFY row_number() OVER (
+    PARTITION BY customer_id, valid_from
+    ORDER BY valid_to DESC, _source_updated_at DESC NULLS LAST,
+      xxhash64(customer_type, sales_channel, trade_segment, postal_code, street, street_number, district, city, state,
+               geo_region, legal_name, trade_name, person_type, is_document_valid, status, registered_date) DESC) = 1
+),
+tracked AS (
   SELECT
     customer_id, valid_from, valid_to,
     named_struct(
       'customer_type', customer_type, 'sales_channel', sales_channel, 'trade_segment', trade_segment,
       'postal_code', postal_code, 'street', street, 'street_number', street_number, 'district', district,
       'city', city, 'state', state, 'geo_region', geo_region) AS attrs
-  FROM silver.erp_customer
+  FROM one_per_start
 ),
 flagged AS (
   SELECT *,
@@ -41,9 +56,11 @@ dated AS (
   FROM versions
 ),
 current_values AS (
+  -- Última versão de cada cliente. O desempate de mesmo dia (vigência mais longa, depois a mais atualizada) já foi
+  -- aplicado em one_per_start.
   SELECT customer_id, legal_name, trade_name, person_type, is_document_valid, status, registered_date
-  FROM silver.erp_customer
-  QUALIFY row_number() OVER (PARTITION BY customer_id ORDER BY valid_from DESC, valid_to DESC, _source_updated_at DESC) = 1
+  FROM one_per_start
+  QUALIFY row_number() OVER (PARTITION BY customer_id ORDER BY valid_from DESC) = 1
 )
 SELECT
   xxhash64(d.customer_id, d.valid_from) AS customer_key,
