@@ -1,0 +1,27 @@
+# Dashboard AI/BI da fatia 1 (ADR-0003, ADR-0006 §7, ADR-0010): "quanto vendi ontem, por região, marca e canal?".
+# Página 1: vendas (pedidos, fact_sales); página 2: faturamento (NFs, fact_invoice). Os dois números não se somam.
+# Lê fatos e dimensões direto, sem tabela agregada: cada consulta leva de 0,8 a 2,2 s no warehouse 2X-Small (medido a frio).
+# A atualização diária vem do job serra_azul_daily (tarefa refresh_dashboard); o dashboard não tem agendamento próprio.
+#
+# O dashboard se edita pelo JSON no Git (src/dashboards/commercial_sales.lvdash.json). Uma edição pela interface
+# deixa o workspace diferente do arquivo, e o próximo deploy falha até alguém escolher um lado (bundle generate
+# dashboard para trazer a edição, ou deploy --force para descartá-la).
+resources:
+  dashboards:
+    commercial_sales:
+      display_name: Comercial — vendas e faturamento D-1
+      file_path: ../src/dashboards/commercial_sales.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      # Catálogo padrão das consultas: o do core, com as dimensões conformadas (dim_* sem prefixo nas consultas).
+      # EXCEÇÃO à convenção "nome de catálogo nunca no SQL": o bundle aceita um só catálogo padrão por dashboard, e as
+      # consultas leem dois. O do domínio (commercial.gold.fact_*) fica escrito por extenso, uma vez por consulta,
+      # num CTE no topo. Se catalog_commercial mudar, o JSON tem de mudar junto.
+      dataset_catalog: ${var.catalog_core}
+      dataset_schema: gold
+      # true: as consultas rodam com a credencial de quem implantou, e o cache atualizado pelo job serve a todos.
+      # Com false, cada visualizador tem o próprio cache, e a atualização do job não chega a ninguém.
+      # Aceitável aqui: a gold não tem PII (ADR-0004) e o workspace tem um único usuário. Em produção: implantação por
+      # service principal e leitura concedida a um grupo.
+      embed_credentials: true
+      # Sem parent_path: o dashboard fica na pasta do bundle no workspace (${workspace.resource_path}), junto dos
+      # outros recursos implantados por ele.

@@ -827,6 +827,12 @@ def order_status_as_of(ped, as_of):
     O ciclo de vida (datas de faturamento, cancelamento e devolução) é sorteado uma vez em build_orders; aqui só se olha
     o que já aconteceu. A carga inicial tira a foto no fim do horizonte; a extração diária, em cada dia D, e entrega
     o cabeçalho dos pedidos cujo último evento (dt_ultimo_evento) é D. A devolução não muda o cabeçalho, só gera NF.
+
+    Regra de corte: todo evento entra na foto só a partir da sua data, inclusive o cancelamento antes do faturamento
+    (cancela_antes), que cai no dia do pedido ou no seguinte. Até dt_cancela, esse pedido está ABERTO. Assim a extração
+    de E = D + 1 não traz nada de depois do fim de D, o que vale também para o pedido de D cancelado em D + 1: ele chega
+    ABERTO em E e CANCELADO na extração seguinte. A carga inicial não muda: nenhum pedido do último dia do horizonte
+    (2026-10-18, um domingo) tem dt_cancela no dia seguinte (0 linhas na bronze de 2026-10-19).
     """
     oid = F.col("num_pedido")
     ped = (ped
@@ -834,11 +840,12 @@ def order_status_as_of(ped, as_of):
            .withColumn("faturado2", F.col("parcial") & F.col("faturado1") & (F.col("dt_fat2") <= F.lit(as_of)))
            .withColumn("cancelado_depois", F.col("cancela_depois") & F.col("faturado1") & (F.col("dt_cancela") <= F.lit(as_of)))
            .withColumn("devolvido", F.col("devolve") & F.col("faturado1") & (F.col("dt_devolucao") <= F.lit(as_of))))
-    status = (F.when(F.col("cancela_antes") | F.col("cancelado_depois"), F.lit("CANCELADO"))
+    cancelado = (F.col("cancela_antes") & (F.col("dt_cancela") <= F.lit(as_of))) | F.col("cancelado_depois")
+    status = (F.when(cancelado, F.lit("CANCELADO"))
               .when(~F.col("faturado1"), F.lit("ABERTO"))
               .when(F.col("parcial") & ~F.col("faturado2"), F.lit("PARCIALMENTE FATURADO"))
               .otherwise(F.lit("FATURADO")))
-    last_event = (F.when(F.col("cancela_antes") | F.col("cancelado_depois"), F.col("dt_cancela"))
+    last_event = (F.when(cancelado, F.col("dt_cancela"))
                   .when(F.col("faturado2"), F.col("dt_fat2")).when(F.col("faturado1"), F.col("dt_fat1")))
     return (ped.withColumn("status", status)
             .withColumn("dt_ultimo_evento", last_event)

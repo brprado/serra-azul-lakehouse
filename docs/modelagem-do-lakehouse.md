@@ -1,14 +1,14 @@
 # Modelagem do lakehouse — Serra Azul
 
-> Este documento é a visão consolidada da modelagem em **2026-10-28**, na fatia 1. Ele junta, num lugar só, o que está espalhado em doze ADRs, nas convenções, no dicionário e no código. Os ADRs continuam mandando. Quando houver conflito, valem o ADR (com as emendas aplicadas) e o código.
+> Este documento é a visão consolidada da modelagem em **2026-11-01**, na fatia 1. Ele junta, num lugar só, o que está espalhado em treze ADRs, nas convenções, no dicionário e no código. Os ADRs continuam mandando. Quando houver conflito, valem o ADR (com as emendas aplicadas) e o código.
 
 | Item | Valor |
 |---|---|
 | **O que cobre** | As dimensões, os fatos, as decisões de modelagem e o porquê de cada uma. Também cobre os tratamentos da silver dos quais a gold depende |
 | **O que não faz** | Não decide nada. Toda regra daqui tem um ADR de origem, citado ao lado |
 | **Como manter** | Atualizar quando um ADR mudar uma dimensão, um fato ou uma regra da silver usada pela gold. Os números vêm dos ADRs, do [dicionário](dicionario-de-dados-erp.md) ou dos manifestos (`data_gen/erp/manifest_*.json`). Número sem fonte vira "não medido" |
-| **Status da fatia 1** | Em andamento. Os pipelines `core` (ADR-0008, 0009) e `commercial` (ADR-0010) rodam no job `serra_azul_daily`, com a extração diária simulada do ERP e a verificação de unicidade (ADR-0012). A idempotência foi provada em 2026-10-27/28. Faltam o dashboard e os critérios de pronto ([roadmap](roadmap.md)) |
-| **Código** | `src/pipelines/core/{bronze,silver,gold}/`, `src/pipelines/commercial/gold/`, `src/jobs/verify_uniqueness.py`, `resources/*.pipeline.yml`, `resources/serra_azul_daily.job.yml` |
+| **Status da fatia 1** | Concluída em 2026-11-03. Os pipelines `core` (ADR-0008, 0009) e `commercial` (ADR-0010) rodam no job `serra_azul_daily`, com a extração diária simulada do ERP e a verificação de unicidade (ADR-0012). A idempotência foi provada em 2026-10-27/28. O dashboard AI/BI foi implantado em 2026-11-01 e é atualizado no fim do job (ADR-0013; seção 6.7). A execução do job de 2026-11-01, já com a atualização do dashboard, deixou os dois fatos com D-1 = 2026-10-31. Os critérios de pronto foram conferidos e a entrevista feita em 2026-11-03 ([roadmap](roadmap.md)) |
+| **Código** | `src/pipelines/core/{bronze,silver,gold}/`, `src/pipelines/commercial/gold/`, `src/jobs/verify_uniqueness.py`, `src/dashboards/commercial_sales.lvdash.json`, `resources/*.pipeline.yml`, `resources/serra_azul_daily.job.yml`, `resources/commercial_sales.dashboard.yml` |
 
 ---
 
@@ -31,7 +31,7 @@
 - **Cada entidade compartilhada tem uma definição só.** Cliente e produto aparecem em todas as fatias.
 - **O acesso é por domínio**, com um `GRANT` por catálogo e herança de privilégios.
 
-**Execução:** dois pipelines SDP em SQL, `core` (landing → dimensões) e `commercial` (fatos), que rodam em série, com o `core` primeiro (ADR-0002, ADR-0005). O Free Edition limita a **um pipeline ativo por tipo**; o significado exato de "ativo" segue sem teste (ADR-0010). O job `serra_azul_daily` garante a ordem: `simulate_erp_extraction` → `core` → `commercial` → `verify_uniqueness` (ADR-0012).
+**Execução:** dois pipelines SDP em SQL, `core` (landing → dimensões) e `commercial` (fatos), que rodam em série, com o `core` primeiro (ADR-0002, ADR-0005). O Free Edition limita a **um pipeline ativo por tipo**; o significado exato de "ativo" segue sem teste (ADR-0010). O job `serra_azul_daily` garante a ordem: `simulate_erp_extraction` → `core` → `commercial` → `verify_uniqueness` → `refresh_dashboard` (ADR-0012, ADR-0013).
 
 ### 1.2 O *star schema* da fatia 1
 
@@ -255,7 +255,8 @@ Valem para todas as tabelas. Cada um traz a decisão, o porquê, a alternativa d
   - o Free Edition tem **um** SQL warehouse, de no máximo 2X-Small, dividido entre o dashboard e as consultas *ad-hoc*. Um *range join* a cada clique custaria caro;
   - nenhum consumidor reimplementa a junção, nem o erro do `BETWEEN`.
 - **Por que não deixar a junção no dashboard:** o custo se repetiria a cada consulta, e cada consumidor teria a sua versão da regra.
-- **Fonte:** ADR-0006 §5.
+- **Medido no dashboard da fatia 1:** com junções só por igualdade de `_key`, cada dataset leva de 0,8 a 2,2 s a frio no warehouse 2X-Small (ADR-0013 D6).
+- **Fonte:** ADR-0006 §5; ADR-0013.
 
 ### 2.9 A data da versão é a do documento que carrega a FK
 
@@ -330,7 +331,7 @@ Valem para todas as tabelas. Cada um traz a decisão, o porquê, a alternativa d
 - **Idempotência provada (ADR-0012), em duas etapas:**
   - **reenvio da extração de 2026-10-27:** a silver de fatos, as dimensões e os fatos ficaram com linhas e checksum idênticos, mas a silver de cadastros dobrou (o `DISTINCT` não juntou as cópias; seção 3.5);
   - **reparo e recarga de 2026-10-28:** com o `GROUP BY ALL`, a bronze não ganhou nenhuma linha, e as 14 tabelas de silver e gold voltaram a ficar idênticas às de antes do reenvio.
-- **Órfã corrigida pela recomputação, medida:** depois de 8 extrações diárias, o cliente `-1` (a) caiu de 1.070 para 254 itens no `fact_sales`, sem reprocesso manual.
+- **Órfã corrigida pela recomputação, medida:** depois de 8 extrações diárias, o cliente `-1` (a) caiu de 1.070 para 254 itens no `fact_sales`, sem reprocesso manual. Depois de 13 (2026-11-01), com todos os clientes fora da carga já cadastrados, caiu para 0 nos dois fatos (ADR-0013).
 - **Fonte:** ADR-0006 §6 e §9; ADR-0010 D7 e "Perguntas difíceis"; ADR-0012.
 
 ### 2.13 A PII não sai da bronze
@@ -685,7 +686,12 @@ Fonte: ADR-0006 §1 e §4; ADR-0010 D9 e D12; [dicionário](dicionario-de-dados-
 - 189 dos 227 órfãos já tinham chegado no cadastro; os 38 restantes chegam até 2026-10-29. Restam 254 itens em `-1` (a) no `fact_sales` e 256 no `fact_invoice`;
 - 1.338 versões com documento inválido (aviso `document_valid`).
 
-**Pegadinha:** a região geográfica **não** é a região do dashboard. As duas redes nacionais têm sede em SP, então o Sudeste fica com 56% do volume geográfico. Na visão comercial, esse volume é de CONTAS NACIONAIS. A região do dashboard vem da `dim_sales_rep` (seção 4.4).
+**Depois de 13 extrações diárias (2026-11-01, ADR-0013):**
+- 47.430 linhas na dimensão, com o `-1`;
+- os 227 clientes fora da carga chegaram no cadastro: 0 itens em `-1` (a) nos dois fatos;
+- 1.338 avisos `document_valid`, como antes.
+
+**Pegadinha:** a região geográfica **não** é a região padrão do dashboard. As duas redes nacionais têm sede em SP, então o Sudeste fica com 56% do volume geográfico. Na visão comercial, esse volume é de CONTAS NACIONAIS. A região padrão do dashboard vem da `dim_sales_rep` (seção 4.4). A geográfica é o filtro secundário "Região geográfica (cliente)", pela versão do cliente na data do documento (ADR-0013 D13).
 
 Fonte: ADR-0006 (tabela da Decisão, §2, §8); ADR-0008 §4; ADR-0010 D1b; ADR-0011; ADR-0012 D6; [dicionário](dicionario-de-dados-erp.md) §2, §3.1 e §5.
 
@@ -740,7 +746,7 @@ Os dois em `commercial.gold`, como materialized views do pipeline `commercial`. 
 
 ### 5.1 `fact_sales`
 
-- **Stakeholder:** Diretor Comercial. **Pergunta:** "quanto vendi ontem, por região, marca e canal?". SLA: D-1 até 8h. A comparação com a meta ainda não tem dataset de metas na fatia 1.
+- **Stakeholder:** Diretor Comercial. **Pergunta:** "quanto vendi ontem, por região, marca e canal?". SLA: D-1 até 8h. A comparação com a meta ainda não tem dataset de metas na fatia 1: lacuna registrada no ADR-0013 D5.
 - **Grão:** 1 item de pedido. **Chave natural:** `(order_id, order_item_number)`.
 - **Data de negócio:** `order_date`. É a **demanda capturada**, no dia em que o pedido foi tirado.
 - **Origem:** `silver.erp_order_item` com `LEFT JOIN silver.erp_order_header` (o cabeçalho é desnormalizado no item).
@@ -796,6 +802,8 @@ Os dois em `commercial.gold`, como materialized views do pipeline `commercial`. 
 | Produto `-1` | 0 |
 
 **Depois de 8 extrações diárias (2026-10-27, ADR-0012):** 2.987.790 linhas, iguais às da silver (a verificação do job confere); data mais recente 2026-10-26 (D-1); cliente `-1` (a) 254.
+
+**Depois de 13 extrações diárias (2026-11-01, ADR-0013):** 3.025.368 linhas, iguais às da silver (as 10 contagens da verificação deram 0); data mais recente 2026-10-31 (D-1); cliente `-1` (a) 0.
 
 Fonte: ADR-0003; ADR-0006 §5, §6 e §9; ADR-0010 (contrato, D4, D6, D7, D9, D10 e resultados); ADR-0012 (resultados).
 
@@ -872,6 +880,8 @@ Fonte: ADR-0003; ADR-0006 §5, §6 e §9; ADR-0010 (contrato, D4, D6, D7, D9, D1
 
 **Depois de 8 extrações diárias (2026-10-27, ADR-0012):** 3.070.233 linhas, iguais às da silver (a verificação do job confere); cliente `-1` (a) 256.
 
+**Depois de 13 extrações diárias (2026-11-01, ADR-0013):** 3.111.348 linhas, iguais às da silver (as 10 contagens da verificação deram 0); data mais recente 2026-10-31 (D-1); cliente `-1` (a) 0.
+
 Fonte: ADR-0003; ADR-0006 §9; ADR-0010 (contrato, D1 a D10 e resultados); ADR-0012 (resultados).
 
 ### 5.3 Os dois fatos juntos
@@ -887,7 +897,12 @@ Fonte: ADR-0003; ADR-0006 §9; ADR-0010 (contrato, D1 a D10 e resultados); ADR-0
 | Cancelados | ficam, com `is_cancelled`; o dashboard filtra | NF de venda e de devolução se anulam |
 | Valores | do pedido | do documento fiscal (centavos podem divergir) |
 
-Os totais não batem, e não devem bater. Entre um e outro há pedidos cancelados (18.190, dos quais 2.200 depois de faturar), devoluções (11.158 NFs), pedidos ainda abertos ou parcialmente faturados (141 e 130), a defasagem entre a data do pedido e a da emissão e os centavos. O dashboard precisa dizer qual número é qual.
+Os totais não batem, e não devem bater. Entre um e outro há pedidos cancelados (18.190, dos quais 2.200 depois de faturar), devoluções (11.158 NFs), pedidos ainda abertos ou parcialmente faturados (141 e 130), a defasagem entre a data do pedido e a da emissão e os centavos.
+
+**O dashboard diz qual número é qual** (ADR-0013 D1): vendas e faturamento ficam em páginas separadas, cada uma com a sua definição, e o texto avisa que os números não se somam. Exemplo da defasagem: na segunda-feira 2026-10-26, a venda foi de R$ 11.976.134,57 e o faturado líquido, de R$ 4.438.234,58.
+- O faturamento atrasa o pedido de 0 a 2 dias. Dos pedidos de 2026-10-26, ~38% foram faturados no mesmo dia, ~42% no dia seguinte e ~15% dois dias depois.
+- Os itens de NF de venda emitidos em 2026-10-26 vêm de 3.527 itens de pedidos do próprio dia, 427 de sábado, 85 de domingo e ~190 de dias anteriores.
+- Na segunda, a parte atrasada que chega vem do fim de semana, que vende pouco. Por isso o faturado de segunda fica muito abaixo da venda (ADR-0013 D1).
 
 ***Drill-across* pelo item do pedido:**
 - `order_id` + `order_item_number` ligam cada item de NF ao item de pedido faturado ou devolvido. Isso concilia o faturamento parcial (um item em duas NFs) e as devoluções item a item.
@@ -898,19 +913,20 @@ Os totais não batem, e não devem bater. Entre um e outro há pedidos cancelado
 - se fosse resolvido na emissão, 344 itens cairiam em outra região (R$ 102.550,60), e o *drill-across* por região não fecharia item a item;
 - **consequência:** no faturamento mensal por região, vale a estrutura comercial da data do pedido.
 
-**O cliente pode diferir entre os fatos:** o `fact_invoice` usa a versão da emissão. Hoje, o segmento difere em 43 itens; o canal e a região geográfica, em 0. Se o dashboard passar a comparar segmento ou canal entre os fatos, a medição deve ser refeita (ADR-0010 D1b).
+**O cliente pode diferir entre os fatos:** o `fact_invoice` usa a versão da emissão. Hoje, o segmento difere em 43 itens; o canal e a região geográfica, em 0. Se o dashboard passar a comparar segmento ou canal entre os fatos, a medição deve ser refeita (ADR-0010 D1b). Hoje cada página do dashboard mostra o canal e a região geográfica do cliente do seu fato, sem comparação entre eles (ADR-0013).
 
 ---
 
 ## 6. Como consultar
 
-Os exemplos usam os nomes do workspace (`core`, `commercial`). No código dos pipelines, os catálogos vêm de `${catalog_core}` / `${catalog_commercial}`. A carga inicial vai de 2025-04-19 a 2026-10-18; desde então, o job acrescenta um dia por extração (em 2026-10-27, os dados chegavam a 2026-10-26). Os exemplos usam datas da carga inicial.
+Os exemplos usam os nomes do workspace (`core`, `commercial`). No código dos pipelines, os catálogos vêm de `${catalog_core}` / `${catalog_commercial}`. A carga inicial vai de 2025-04-19 a 2026-10-18; desde então, o job acrescenta um dia por extração (em 2026-10-27, os dados chegavam a 2026-10-26). Os exemplos usam datas da carga inicial, salvo a seção 6.2, que segue o dashboard. Como o dashboard consome os fatos está na seção 6.7.
 
 ### 6.1 "Como era" e "como é hoje"
 
 ```sql
 -- "Como era" (padrão): a região comercial do vendedor na data do pedido.
 -- JOIN simples pela _key não perde linha: todo fato aponta para uma linha da dimensão, nem que seja a -1.
+-- O pipeline garante isso, mas a verify_uniqueness não confere; o dashboard usa LEFT JOIN por isso (ADR-0013 D8).
 SELECT r.commercial_region, sum(f.net_amount) AS net_amount
 FROM commercial.gold.fact_sales f
 JOIN core.gold.dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key
@@ -930,19 +946,23 @@ GROUP BY 1;
 
 ### 6.2 Vendas D-1 por região, marca e canal
 
+A data é a **última carregada**, e não `date_sub(current_date(), 1)`: com o job atrasado, o relógio daria um dia vazio ou incompleto (ADR-0013 D2).
+
 ```sql
-SELECT r.commercial_region,               -- região comercial, "como era" (ADR-0006 §7)
-       p.brand,
-       c.sales_channel,                   -- DIRETO, DISTRIBUIDOR, REDE
+WITH ref AS (SELECT max(order_date) AS ref_date FROM commercial.gold.fact_sales)
+SELECT coalesce(r.commercial_region, 'DESCONHECIDA') AS commercial_region,  -- região comercial, "como era" (ADR-0006 §7)
+       coalesce(p.brand, 'DESCONHECIDA')             AS brand,
+       coalesce(c.sales_channel, 'DESCONHECIDO')     AS sales_channel,      -- DIRETO, DISTRIBUIDOR, REDE
        sum(f.net_amount)          AS net_amount,
        sum(f.volume_hl)           AS volume_hl,
-       count(DISTINCT f.order_id) AS orders
+       count(DISTINCT f.order_id) AS orders                                  -- contagem distinta: não se soma entre linhas
 FROM commercial.gold.fact_sales f
-JOIN core.gold.dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key
-JOIN core.gold.dim_product   p ON p.product_key   = f.product_key
-JOIN core.gold.dim_customer  c ON c.customer_key  = f.customer_key
-WHERE f.order_date = DATE'2026-10-18'     -- no job diário: date_sub(current_date(), 1)
-  AND NOT f.is_cancelled
+JOIN ref ON f.order_date = ref.ref_date
+-- LEFT JOIN + coalesce: o total bate com o fato mesmo se uma _key não tiver linha na dimensão (ADR-0013 D8).
+LEFT JOIN core.gold.dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key
+LEFT JOIN core.gold.dim_product   p ON p.product_key   = f.product_key
+LEFT JOIN core.gold.dim_customer  c ON c.customer_key  = f.customer_key
+WHERE NOT f.is_cancelled
 GROUP BY ALL;
 ```
 
@@ -1017,7 +1037,7 @@ SELECT * FROM s FULL OUTER JOIN i USING (commercial_region);
 |---|---|---|
 | Juntar com a dimensão pelo `_id` sem `is_latest` | Cada linha do fato se multiplica pelo número de versões do `_id` | Pela `_key` ("como era") ou pelo `_id` com `AND is_latest` ("como é hoje") |
 | Usar `is_current` no "como é hoje" | Os 6 vendedores desligados ficam sem região (R$ 6,6 mi em jan–jun/2026) | `is_latest` |
-| `INNER JOIN` pelo `_id` no "como é hoje" | As linhas (a) somem: 1.070 itens no `fact_sales` na carga inicial, 254 em 2026-10-27 | `LEFT JOIN` + `coalesce` |
+| `INNER JOIN` pelo `_id` no "como é hoje" | As linhas (a) somem: 1.070 itens no `fact_sales` na carga inicial, 254 em 2026-10-27 (0 em 2026-11-01, mas volta a acontecer no próximo cadastro atrasado) | `LEFT JOIN` + `coalesce` |
 | `BETWEEN valid_from AND valid_to` numa junção por data | No dia da troca, a linha casa com duas versões e é contada duas vezes | `data >= valid_from AND data < valid_to` |
 | Média de preço por linha: `avg(net_amount / quantity)` | Uma caixa pesa o mesmo que 500 | `sum(net_amount) / sum(quantity)` |
 | Somar `quantity` de produtos diferentes | Caixa de lata + barril | `volume_hl` |
@@ -1026,6 +1046,21 @@ SELECT * FROM s FULL OUTER JOIN i USING (commercial_region);
 | `count(*)` para medir o faturamento no `fact_invoice` | Conta as linhas de CFOP sem regra, cujas medidas são nulas (o `sum` as ignora) | Somar as medidas; para achar o caso, `invoice_type IS NULL` |
 | Juntar `fact_sales` e `fact_invoice` no grão atômico | *Fan-out*: o item com parcial ou devolução é contado várias vezes | Agregar cada fato antes (seção 6.5) |
 | Agrupar por `year` e `iso_week` | 2024-12-30 vira a semana 1 de 2024 | `year_month` ou a própria data |
+| `date_sub(current_date(), 1)` como "ontem" num painel | Com o job atrasado, o painel mostra um dia vazio ou incompleto | `max(order_date)`, a última data carregada (ADR-0013 D2) |
+| Somar a contagem de pedidos entre marcas (ou produtos) | Um pedido com duas marcas conta duas vezes: em 2026-10-26, 5.705 contra 2.454 pedidos reais | Contar distinto no grão final, ou guardar o pedido no grão do dataset (ADR-0013 D7) |
+| Calcular atraso ou frescor com `current_date` num dashboard publicado | O resultado fica em cache por até 24 h: o atraso seria o da hora da consulta, e não o da visualização | Propriedades do dado: `max(order_date)` e `max(_updated_at)` (ADR-0013 D4) |
+
+### 6.7 Como o dashboard consome os fatos
+
+Resumo do [ADR-0013](adr/0013-dashboard-comercial-data-de-referencia-e-atualizacao-pelo-job.md); o ADR manda.
+
+- **Duas páginas, dois números:** Vendas (pedidos), do `fact_sales` sem cancelados; Faturamento (NFs), do `fact_invoice`, com as devoluções negativas. Não se somam (seção 5.3).
+- **Data de referência:** parâmetro `data_ref`. O padrão, "Última data carregada", vira `max(order_date)` nas vendas e `max(issue_date)` no faturamento. A comparação é com a referência − 7, o mesmo dia da semana anterior.
+- **Viés de maturação:** a venda exclui os cancelados até a carga, e ~1,5% do valor de um dia é cancelado nos dias seguintes. A referência ainda vai perder essa parte; a comparação, uma semana mais velha, já perdeu. A variação sai ~1,5 p.p. mais alta em valor e volume e ~1,3 p.p. em pedidos. O painel avisa (ADR-0013 D3).
+- **Junções:** só por `_key`, com `LEFT JOIN` e `coalesce` para DESCONHECIDA/DESCONHECIDO. A região padrão é a comercial do vendedor; o canal e a região geográfica (filtro secundário) são do cliente, na versão da data do documento (seções 2.9 e 4.3).
+- **Grão dos datasets:** já agregados no SQL. A exceção são os indicadores de vendas, que guardam o pedido no grão para a contagem distinta. A região geográfica entrou sem aumentar as linhas: pedido → cliente → região é dependência funcional (ADR-0013 D13).
+- **Frescor:** "Dados até" (`max` da data de negócio) e "Carregados em" (`max(_updated_at)`, em Brasília).
+- **Catálogo:** o padrão das consultas é `core.gold`, e as dimensões ficam sem prefixo. O `commercial.gold.fact_*` fica escrito por extenso, como exceção à convenção (ADR-0013 D9).
 
 ---
 
@@ -1067,6 +1102,8 @@ Todas as expectations que afetam dimensões e fatos. "Aviso" = só mede. As tabe
 | `fact_sales`, `fact_invoice` | `sales_rep_version_valid_on_order_date` | aviso | Vendedor (b) | 0 / 0 | 0 / 0 |
 | `fact_sales`, `fact_invoice` | `product_id_in_dimension` | aviso | Produto (a); o produto não tem (b), porque a junção não usa data | 0 / 0 | 0 / 0 |
 
+**Na execução de 2026-11-01** (5 extrações, de 2026-10-28 a 2026-11-01; ADR-0013): no `core`, só `document_valid` (1.338 avisos) e 46 descartes em `positive_quantity_and_amount`; no `commercial`, nenhuma violação, inclusive `customer_id_in_dimension` (0 nos dois fatos).
+
 **Por que as regras dos fatos ficam no próprio fato, e não numa view intermediária:**
 - a documentação oficial diz que as métricas de expectation de uma view podem não estar disponíveis (*"might not be available"*);
 - a regra no fato mede exatamente o que é publicado, inclusive colunas que só existem no resultado final (`_is_*` e as chaves).
@@ -1081,8 +1118,8 @@ Todas as expectations que afetam dimensões e fatos. "Aviso" = só mede. As tabe
 |---|---|---|---|
 | **Recomputação sem incremental** | Fatos (~6 mi de linhas) e cadastros (~73 mil) recalculados inteiros a cada execução. O SDP recusou o incremental (`INPUT_NOT_IN_DELTA`, `EXCESSIVE_OPERATOR_NESTING`) | ADR-0006, ADR-0008, ADR-0010 | Em 10x (~60 mi), 5 a 10 min de processamento, estimados. Em 100x, incremental obrigatório: fatos como streaming tables com `AUTO CDC` e reprocesso do `-1`, ou MVs intermediárias |
 | **Event log no schema do domínio** | Tabela `event_log_*` em `commercial.gold` (e em `core.bronze`). Com o `GRANT` no catálogo, todo consumidor lê o event log | ADR-0010 | Schema técnico na fatia 2 (observabilidade) |
-| **Unicidade sem verificação automática (resolvido)** | Nenhum. A tarefa `verify_uniqueness` confere, a cada execução, 10 contagens: o grão dos fatos, a `_key` das três dimensões, a contagem de cada fato contra a silver e as versões repetidas `(id, valid_from)` na silver dos três cadastros. Falha o job se algo der diferente de 0. Em 2026-10-27/28, com as 7 primeiras: 7 zeros; as 3 novas deram 0 no warehouse em 2026-10-28 e rodam na próxima execução | ADR-0010 D13 | **Entregue pelo [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) D7**. Em produção, também no CI |
-| **Verificação depois da publicação** | A `verify_uniqueness` é alarme, e não portão: roda depois que os pipelines publicaram. A duplicação que ela acha já chegou ao dashboard, e o job vermelho fica sem notificação até a fatia 2 | ADR-0012 D6 e D7 | Em produção: *write-audit-publish* (fatos em *staging*, verificação, promoção) para os fatos do SLA das 8h |
+| **Unicidade sem verificação automática (resolvido)** | Nenhum. A tarefa `verify_uniqueness` confere, a cada execução, 10 contagens: o grão dos fatos, a `_key` das três dimensões, a contagem de cada fato contra a silver e as versões repetidas `(id, valid_from)` na silver dos três cadastros. Falha o job se algo der diferente de 0. Em 2026-10-27/28, com as 7 primeiras: 7 zeros; as 3 novas deram 0 no warehouse em 2026-10-28. Na execução de 2026-11-01, a primeira no job com as 10: 10 zeros (ADR-0013) | ADR-0010 D13 | **Entregue pelo [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) D7**. Em produção, também no CI |
+| **Verificação depois da publicação** | A `verify_uniqueness` é alarme, e não portão: roda depois que os pipelines publicaram. A duplicação que ela acha já chegou aos fatos, e o job vermelho fica sem notificação até a fatia 2. O dashboard publicado só é atualizado depois dela (`refresh_dashboard`), mas isso não protege o painel com o job diário: o cache do dia anterior já tem ~24 h, e a visualização seguinte consulta o warehouse | ADR-0012 D6 e D7; ADR-0013 D10 | Em produção: *write-audit-publish* (fatos em *staging*, verificação, promoção) para os fatos do SLA das 8h |
 | **Idempotência sem prova (resolvido)** | Nenhum. Reenvio da extração de 2026-10-27 absorvido e recarga do mesmo dia sem duplicata, com linhas e checksum idênticos | ADR-0010 | **Provada pelo [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md)** |
 | **Reenvio corrigido da mesma data** | Só o reenvio idêntico é absorvido na silver de cadastros. Se a correção mantiver o `valid_from`, a dimensão fica com uma versão, e a regra de aviso e a verificação acusam. Se mudar o início, ou acrescentar ou remover versões, silver e dimensão publicam a união até a extração do dia seguinte | ADR-0012 D5 | Fatia 3 (reenvio e contratos); em produção, versão ou carimbo por reenvio |
 | **Causa do `DISTINCT` na materialized view não confirmada** | `SELECT DISTINCT * EXCEPT (...)` manteve as duas cópias do reenvio no pipeline, mas não no warehouse. Trocado por `GROUP BY ALL`, uma correção empírica | ADR-0012 D5 | Abrir o perfil de consulta do update `3e9fdd9c` no Query History (sem custo de compute) para confirmar uma das duas hipóteses |
@@ -1092,6 +1129,9 @@ Todas as expectations que afetam dimensões e fatos. "Aviso" = só mede. As tabe
 | **ERP que reescreve vigência passada** | Um mês já reportado pode mudar | ADR-0006 | Se o negócio exigir relatórios fechados: *snapshot* mensal congelado |
 | **LGPD: `-1` para sempre** | O cliente esquecido fica em `-1` (a), e o (a) deixa de ser só "cadastro atrasado". **Só vale desde que a fonte pare de reenviar o titular:** a extração full diária de `clientes_pdv` traz o cadastro inteiro, e o titular apagado voltaria na extração seguinte para landing, bronze, silver e dimensão | ADR-0010 D2; ressalva no ADR-0012 | Desejado: valores fiscais sem PII. Em produção: apagamento ou anonimização no ERP, ou cláusula da integração. No simulador, não implementado (gatilho: o primeiro pedido de esquecimento, ou a fatia 5) |
 | **Contagem dupla nas regras do `-1`** | Item sem cabeçalho conta em mais de uma regra; o (a) puro sai por subtração | ADR-0010 D2 | Tornar os motivos exclusivos, se atrapalhar a leitura |
+| **`_key` do fato sem linha na dimensão** | No dashboard (`LEFT JOIN` + `coalesce`), cai no mesmo balde do `-1` (DESCONHECIDA/DESCONHECIDO), sem aviso: o total bate, mas o rótulo esconde a causa. A `verify_uniqueness` confere a unicidade da `_key` e a contagem do fato contra a silver, e não a integridade fato → dimensão | ADR-0013 D8 | Só aparece se o `core` republicar dimensões com versões diferentes e o `commercial` não recalcular (falha do `commercial` depois do `core`, ou `core` rodando sozinho). Sem contagem nova por enquanto (YAGNI: depois do go-live, o simulador não muda versões, e nenhuma `_key` some). O `done-checker` mede a FK órfã no fechamento da fatia. Gatilhos: ele achar algum caso; o `core` rodar fora do job; uma fonte real, com versões que mudam |
+| **Viés de maturação no dashboard** | A referência ainda vai perder cancelamentos (1,35% dos pedidos, 1,54% do valor e 1,57% do volume, vistos em D + 1); a comparação, uma semana mais velha, já perdeu quase tudo. A variação sai ~1,3 a ~1,5 p.p. mais alta. Até a extração de 2026-11-01, o vazamento do simulador escondia parte do viés | ADR-0013 D3 | Medido e avisado no painel. Comparar com o estado "*as-of*" do dia referência − 7 exigiria reconstruir a bronze por data (YAGNI) |
+| **Meta sem fonte** | "Como estou contra a meta?" ([caso de negócio](caso-de-negocio.md) §3) fica sem resposta: não há fonte de metas | ADR-0013 D5 | Quando a fonte existir, o grão dela decide a junção (provavelmente região comercial ou vendedor × mês). Não decidido. Sem dona em nenhuma fatia: registrada no post-mortem do [roadmap](roadmap.md) |
 | **Tabela de preço fora da fatia 1** | Sem análise contra o preço de lista; o desconto vem do item da NF | ADR-0006 §10 | Entra quando a análise for pedida |
 | **Buraco legítimo na hierarquia** | Um vendedor recontratado teria a versão anterior esticada por cima do buraco | ADR-0010 D11 | Decidir no primeiro caso real (hoje 0) |
 | **Atributos tipo 1 da `dim_customer` pela versão aberta (resolvido)** | Nenhum. Os atributos tipo 1 vinham de `silver.erp_customer WHERE is_current`, com `JOIN` interno: um cliente sem versão aberta sumiria da dimensão **com todas as versões** (vendas no `-1` (a)), e duas versões abertas duplicariam a `customer_key`. Medido em 2026-10-22: 0 clientes sem versão aberta, 0 com duas abertas e 0 com a última versão fechada | Achado na escrita deste documento (2026-10-21) | **Resolvido pelo [ADR-0011](adr/0011-dim-customer-tipo-1-pela-ultima-versao.md)** (2026-10-22): tipo 1 pela última versão de cada cliente, como a `dim_product` (ADR-0010 D12). Refresh `9430ea`: dimensão idêntica (47.167 linhas, mesmo checksum) |
@@ -1157,6 +1197,7 @@ Só o que muda a modelagem.
 | [ADR-0010](adr/0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) | Pipeline `commercial`: data da versão, motivo do `-1`, sinal, bruto, regras de vigência, nunca `NULL` |
 | [ADR-0011](adr/0011-dim-customer-tipo-1-pela-ultima-versao.md) | Atributos tipo 1 da `dim_customer` pela última versão de cada cliente, e não pela versão aberta |
 | [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) | Job diário: extração simulada e determinística do ERP, landing sem sobrescrita, cadastros à prova de reenvio, mesmo início prevenido nas dimensões e verificação de unicidade |
+| [ADR-0013](adr/0013-dashboard-comercial-data-de-referencia-e-atualizacao-pelo-job.md) | Dashboard comercial no bundle: venda e faturamento separados, última data carregada como referência, frescor pelo dado e atualização no fim do job |
 | [Convenções](convencoes.md) | Regras em vigor em uma página |
 | [Dicionário de dados do ERP](dicionario-de-dados-erp.md) | Colunas da fonte, sujeiras e contagens da carga inicial e da extração diária |
 | [Caso de negócio](caso-de-negocio.md) | Empresa, stakeholders, fontes e requisitos |

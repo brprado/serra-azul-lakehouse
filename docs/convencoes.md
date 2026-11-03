@@ -1,6 +1,6 @@
 # Convenções do lakehouse — Serra Azul
 
-Resumo de uma página das regras em vigor: ADR-0001 com a emenda do [ADR-0004](adr/0004-ajustes-de-organizacao-nomes-landing-e-pii.md), [ADR-0005](adr/0005-orquestracao-por-job-e-codigo-em-bundle.md), [ADR-0006](adr/0006-dimensoes-conformadas-identidade-scd-e-chaves.md), [ADR-0007](adr/0007-retencao-da-bronze-por-tipo-de-extracao.md), [ADR-0008](adr/0008-pipeline-core-deduplicacao-qualidade-e-cadastros.md), [ADR-0010](adr/0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md), [ADR-0011](adr/0011-dim-customer-tipo-1-pela-ultima-versao.md) e [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md). Em caso de dúvida, os ADRs mandam. Revisado em 2026-10-28.
+Resumo de uma página das regras em vigor: ADR-0001 com a emenda do [ADR-0004](adr/0004-ajustes-de-organizacao-nomes-landing-e-pii.md), [ADR-0005](adr/0005-orquestracao-por-job-e-codigo-em-bundle.md), [ADR-0006](adr/0006-dimensoes-conformadas-identidade-scd-e-chaves.md), [ADR-0007](adr/0007-retencao-da-bronze-por-tipo-de-extracao.md), [ADR-0008](adr/0008-pipeline-core-deduplicacao-qualidade-e-cadastros.md), [ADR-0010](adr/0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md), [ADR-0011](adr/0011-dim-customer-tipo-1-pela-ultima-versao.md), [ADR-0012](adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) e [ADR-0013](adr/0013-dashboard-comercial-data-de-referencia-e-atualizacao-pelo-job.md). Em caso de dúvida, os ADRs mandam. Revisado em 2026-11-01.
 
 ## Organização
 
@@ -18,7 +18,7 @@ Domínios: `commercial` (já criado); `supply`, `trade_marketing`, `logistics` e
 
 ## Nomes de tabelas
 
-- Inglês, `snake_case`, entidade no singular. Sem prefixo de camada (o schema já diz) nem de domínio (o catálogo já diz).
+- Inglês, `snake_case`, entidade no singular. Sem prefixo de camada (o schema já diz) nem de domínio (o catálogo já diz). Dentro do dashboard, os nomes ficam em português (seção "Dashboard").
 - **Bronze e silver** levam o prefixo do sistema de origem (`erp_`, `wms_`, `tms_`, `sellout_`, `ref_`).
 - **Gold**: fatos `fact_<processo>` e dimensões `dim_<entidade que forma o grão>`.
 
@@ -86,17 +86,35 @@ Domínios: `commercial` (já criado); `supply`, `trade_marketing`, `logistics` e
   - Mudança aditiva: o dono aprova e avisa os consumidores.
   - Quebra de contrato (renomear/remover coluna, mudar grão ou regra de SCD): o dono e os consumidores aprovam, com versão e prazo de depreciação.
 
+## Dashboard (ADR-0013)
+
+- **Lê fatos e dimensões direto**, juntando só por `_key`. Sem tabela agregada até um dataset passar de ~10 s.
+- **`LEFT JOIN` nas dimensões, com `coalesce`** para DESCONHECIDA/DESCONHECIDO: o total do painel bate com o fato, com o `-1` incluído.
+- **Data de referência = a última data carregada** (`max` da data de negócio do fato), nunca `current_date - 1`. O usuário escolhe outra no filtro.
+- **Frescor só com propriedades do dado** ("Dados até" e "Carregados em", de `max(_updated_at)`). Nada com `current_date` ou `current_timestamp`: o painel publicado serve resultado em cache por até 24 h.
+- **Venda (pedidos) e faturamento (NFs) em páginas separadas**, cada uma com a sua definição. Os números não se somam.
+- **Contagem distinta não se soma entre linhas.** Um dataset que precisa contar pedidos sob filtro guarda o pedido no grão.
+- **Edição só pelo JSON no Git.** Uma edição pela interface faz o deploy falhar até `databricks bundle generate dashboard` (traz a edição) ou `deploy --force` (descarta).
+- **`src/dashboards/*.lvdash.json` fica fora do `sync`** do bundle: sincronizado, viraria uma segunda cópia do dashboard.
+- **`embed_credentials: true`:** o cache é compartilhado, e a atualização do job chega a quem vê o painel sem tê-lo publicado. Risco aceito: a credencial lê tudo o que o publicador lê, inclusive a bronze com PII. O que protege é o conteúdo fixo: JSON revisado no Git, visualizador sem SQL, parâmetro ligado e não concatenado. Em produção: *service principal* com `SELECT` só nas gold (ADR-0013 D11).
+- **Republicar o dashboard zera o cache:** a primeira visualização depois de um deploy consulta o warehouse (observado em 2026-11-01).
+- **Nomes em português dentro do dashboard:** datasets, parâmetros e colunas calculadas, porque é a camada de apresentação. As colunas vindas das tabelas mantêm o nome original em inglês (ADR-0013 D14).
+
 ## Código e execução
 
 - **Motor:** Lakeflow SDP, SQL por padrão; Python só onde SQL não resolver (por exemplo, a simulação de dados).
-- **Pipelines:** um `core` e um por domínio, encadeados pelo Job `serra_azul_daily`: `simulate_erp_extraction` → `core` → `commercial` → `verify_uniqueness` (ADR-0012). O agendamento (05:00 de Brasília) fica pausado; execução manual com `databricks bundle run serra_azul_daily`.
+- **Pipelines:** um `core` e um por domínio, encadeados pelo Job `serra_azul_daily`: `simulate_erp_extraction` → `core` → `commercial` → `verify_uniqueness` → `refresh_dashboard` (ADR-0012, ADR-0013). O agendamento (05:00 de Brasília) fica pausado; execução manual com `databricks bundle run serra_azul_daily`.
 - **Parâmetros do job:** `extraction_date` (vazio = hoje em `America/Sao_Paulo`; data futura é erro), `output_root` (vazio = a landing real; outra raiz para ensaio) e `resend` (`true` grava o reenvio).
 - **Recarga de um dia já gravado** = rodar o job com `extraction_date` explícito (`--params extraction_date=AAAA-MM-DD`): o simulador não grava nada que já existe, e os pipelines rodam de novo sobre a mesma landing, sem mudar nada. Sem `extraction_date`, o simulador completa as extrações que faltam até hoje.
 - **Reprocessamento sem duplicata** (caso de negócio §6): o reenvio da fonte é absorvido (`AUTO CDC` nos fatos, `GROUP BY ALL` nos cadastros), e reprocessar com regra nova é *full refresh* seletivo da silver a partir da bronze (ADR-0008, ADR-0012).
-- **Retentativas por tarefa:** 1 no simulador (é idempotente) e 1 na verificação (separa violação, que falha de novo, de falha passageira na partida); 0 nos pipelines (já tentam 1 vez por dentro).
-- **A verificação é alarme, não portão:** roda depois que os pipelines publicaram. Ela falha o job e não corrige nada; a duplicação que ela acha já chegou ao consumidor (ADR-0012).
-- **Simulação de fonte determinística:** o conteúdo de cada extração é função só da sua data. Dependência que afeta o dado gerado tem versão exata (`faker==37.12.0`).
+- **Retentativas por tarefa:** 1 no simulador (é idempotente) e 1 na verificação (separa violação, que falha de novo, de falha passageira na partida); 0 nos pipelines (já tentam 1 vez por dentro); 1 na atualização do dashboard (separa a partida a frio do warehouse da falha real; a atualização é idempotente; ADR-0013 D10).
+- **A verificação é alarme, não portão:** roda depois que os pipelines publicaram. Ela falha o job e não corrige nada; a duplicação que ela acha já chegou ao consumidor (ADR-0012). A atualização do dashboard vem depois dela, mas isso **não protege o painel** com o job diário: o cache do dia anterior já tem ~24 h, e a visualização seguinte consulta o warehouse (ADR-0013 D10). O resultado da verificação visível no painel é tema da fatia 2.
+- **Simulação de fonte determinística:** o conteúdo de cada extração é função da sua data e da versão do gerador. Dependência que afeta o dado gerado tem versão exata (`faker==37.12.0`). Uma correção no gerador não regera as extrações já gravadas (ADR-0013).
+- **Regra de corte na simulação:** toda foto "*as-of*" inclui cada evento só a partir da sua data. A extração E traz só o que aconteceu até o fim de D = E − 1 (ADR-0012; defeito corrigido no ADR-0013).
+- **Prova de reenvio só com extrações a partir de 2026-11-02:** as anteriores foram gravadas com o defeito de corte, e o reenvio delas sairia diferente do original (ADR-0013).
 - **Nomes de catálogo** nunca são escritos no SQL: usar `${catalog_core}` / `${catalog_<domínio>}`, preenchidos pelas variáveis do bundle.
+  - **Exceção: o JSON do dashboard** (`src/dashboards/*.lvdash.json`), que não interpola variáveis do bundle. O catálogo padrão das consultas é `${var.catalog_core}` (`dataset_catalog`, schema `gold`). O `commercial.gold.fact_*` fica escrito por extenso, uma vez por consulta, com comentário. Se `catalog_commercial` mudar, o JSON muda junto (ADR-0013 D9).
+- **Warehouse do dashboard:** variável `warehouse_id` por `lookup` do nome (`Serverless Starter Warehouse`), e não pelo id, que muda se o warehouse for recriado (ADR-0013).
 - **Datasets:** `CREATE OR REFRESH STREAMING TABLE` / `MATERIALIZED VIEW`. Nunca `CREATE OR REPLACE` nem sintaxe legada (`LIVE.`).
 - **Antes de executar:** `databricks bundle validate` e atualização *validate-only* dos pipelines.
 - *Full refresh* de streaming table só com aprovação explícita.

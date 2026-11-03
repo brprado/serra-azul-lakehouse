@@ -218,6 +218,7 @@ def main():
     # ---- uma extração por data
     for ext in sorted(todo):
         d = ext - timedelta(days=1)
+        # A foto é a do fim de D: nenhum evento depois de D entra na extração E (regra de corte em order_status_as_of).
         snap = world.order_status_as_of(ped, d)
         changed = snap.where((F.col("dt_pedido") == F.lit(d)) | (F.col("dt_ultimo_evento") == F.lit(d)))
         nf_d = nf.where(F.col("dt_emissao") == F.lit(d))

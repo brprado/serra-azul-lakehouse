@@ -18,14 +18,26 @@ sync:
     - GUIA_AI_DEV_KIT.md
     - README.md
     - notes.md
+    # O dashboard vai pelo recurso dashboards (resources/commercial_sales.dashboard.yml). Sincronizado como arquivo,
+    # o .lvdash.json viraria uma segunda cópia do dashboard no workspace (recomendação da documentação de bundles).
+    - src/dashboards/*.lvdash.json
 
 variables:
   catalog_core:
     description: Catálogo alinhado à fonte (landing, bronze, silver) e das dimensões conformadas
     default: core
+  # O dashboard não usa esta variável: o JSON dele escreve o catálogo do domínio por extenso (commercial.gold.fact_*,
+  # ADR-0013 D9). Mudar o valor, ou criar um segundo target, exige mudar o JSON junto. Sem isso, o painel continua
+  # lendo o catálogo antigo, sem erro nenhum.
   catalog_commercial:
     description: Catálogo do domínio comercial (fatos e agregados)
     default: commercial
+  # Pelo nome, e não pelo id: o id muda se o warehouse for recriado, o nome é o que se lê na interface.
+  # No Free Edition há um único warehouse (2X-Small), disputado pelo dashboard e pelas consultas ad hoc.
+  warehouse_id:
+    description: SQL warehouse do dashboard e da atualização dele no job diário
+    lookup:
+      warehouse: Serverless Starter Warehouse
 
 targets:
   # Um único target: o workspace de estudo é o "prod" do projeto (ADR-0005).

@@ -1,5 +1,8 @@
-# Job diário (ADR-0005, ADR-0010 D13): extração do ERP -> pipeline core -> pipeline commercial -> verificação de unicidade.
-# Em série: o commercial lê a silver e as dimensões do core, e a verificação confere o que os dois publicaram.
+# Job diário (ADR-0005, ADR-0010 D13, ADR-0012, ADR-0013): extração do ERP -> pipeline core -> pipeline commercial ->
+# verificação de unicidade -> atualização do dashboard.
+# Em série: o commercial lê a silver e as dimensões do core, e a verificação confere o que os dois publicaram. A
+# atualização do dashboard vem depois da verificação, mas os fatos já estão publicados quando ela roda: a verificação
+# é alarme, não portão (ADR-0012), e a atualização só renova o cache do painel (ADR-0013).
 # Agendamento às 05:00 de Brasília, 3h antes do SLA das 8h, mas PAUSADO: cada execução consome a cota do Free Edition,
 # então o job roda à mão (databricks bundle run serra_azul_daily). Sem notificação por e-mail: a entrega não é
 # garantida no Free Edition.
@@ -7,7 +10,7 @@ resources:
   jobs:
     serra_azul_daily:
       name: serra_azul_daily
-      description: Extração diária simulada do ERP na landing, pipelines core e commercial e verificação de unicidade dos fatos e dimensões.
+      description: Extração diária simulada do ERP na landing, pipelines core e commercial, verificação de unicidade dos fatos e dimensões e atualização do dashboard comercial.
       max_concurrent_runs: 1  # duas execuções juntas gravariam a mesma extração e disputariam os pipelines
       schedule:
         quartz_cron_expression: "0 0 5 * * ?"
@@ -77,6 +80,22 @@ resources:
               - ${var.catalog_core}
               - --catalog-commercial
               - ${var.catalog_commercial}
+        # O dashboard publicado serve o resultado em cache por até 24 h; só uma atualização garante o dia novo.
+        # Depois da verificação: os fatos já foram publicados (a verificação é alarme, não portão). Se ela falhar, a
+        # atualização não roda, mas isso não protege o painel: com o job diário, o cache do dia anterior já está perto
+        # das 24 h e a próxima visualização consulta o warehouse (ADR-0013 D10).
+        # 1 retentativa, pelo mesmo motivo da verificação (ADR-0012 D8): separa a falha passageira (partida a frio do
+        # warehouse) da falha real, que se repete. A atualização é idempotente: rodar de novo só refaz o cache. Se as
+        # duas tentativas falharem, nenhum dado se perde, só o frescor atrasa: o job fica vermelho, e o cache expira
+        # em até 24 h. Sem subscription: a entrega de e-mail não está confirmada no Free Edition.
+        - task_key: refresh_dashboard
+          depends_on:
+            - task_key: verify_uniqueness
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          timeout_seconds: 600
+          dashboard_task:
+            dashboard_id: ${resources.dashboards.commercial_sales.id}
       environments:
         # Mesmo ambiente serverless da carga inicial (resources/erp_initial_load.job.yml): o Faker gera os mesmos dados
         # pessoais da carga inicial a partir da mesma semente.

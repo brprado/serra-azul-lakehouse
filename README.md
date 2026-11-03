@@ -14,7 +14,7 @@ Uma fabricante de bebidas com faturamento de ~R$ 2,8 bi/ano, 3 fábricas, 8 cent
 
 | Fatia | Pergunta de negócio | Quem pergunta | Status |
 |---|---|---|---|
-| 1. Comercial | "Quanto vendi ontem, por região, marca e canal?" (D-1 até 8h) | Diretor Comercial | 🟨 em andamento |
+| 1. Comercial | "Quanto vendi ontem, por região, marca e canal?" (D-1 até 8h) | Diretor Comercial | ✅ concluída |
 | 2. Supply chain | "Qual a cobertura de estoque por CD e SKU?" | Gerente de Supply | ⬜ |
 | 3. Sell-out | "Sell-in × sell-out: estou empurrando estoque para o canal?" (14 fontes sujas) | Trade Marketing | ⬜ |
 | 4. Logística | "Qual o meu OTIF por CD e transportadora?" | Supply e Comercial | ⬜ |
@@ -37,13 +37,14 @@ flowchart LR
     end
     S --> F
     D --> F
-    F --> DASH["dashboard<br/>(a entregar)"]
+    F --> DASH["dashboard AI/BI<br/>vendas e faturamento D-1"]
 ```
 
 - **Medallion organizado por fonte e por domínio.** Até a silver, os dados ficam no catálogo `core`, alinhados à fonte: cada fonte é ingerida uma vez. Da gold em diante, cada domínio (`commercial`, depois `supply`, `logistics`...) tem o seu catálogo, e as dimensões conformadas ficam em `core.gold`, com uma definição por entidade.
-- **Lakeflow Spark Declarative Pipelines em SQL**, com dois pipelines (`core` e `commercial`) que rodam em série. O job `serra_azul_daily` garante a ordem: um simulador grava na landing a extração diária do ERP, os dois pipelines rodam, e uma verificação final, depois da publicação, falha o job se algum fato, dimensão ou cadastro duplicou.
+- **Lakeflow Spark Declarative Pipelines em SQL**, com dois pipelines (`core` e `commercial`) que rodam em série. O job `serra_azul_daily` garante a ordem: um simulador grava na landing a extração diária do ERP, os dois pipelines rodam, uma verificação, depois da publicação, falha o job se algum fato, dimensão ou cadastro duplicou, e a última tarefa atualiza o dashboard.
+- **Dashboard AI/BI com duas páginas, vendas (pedidos) e faturamento (NFs)**, cujos números não se somam. A data de referência é a última carregada, e não o relógio: com o job atrasado, o painel mostra o último dia que existe, e o frescor diz qual é (ADR-0013).
 - **Idempotência provada, com um achado no caminho:** a recarga do mesmo dia não muda nenhuma linha. O primeiro teste de reenvio da extração dobrou a silver de cadastros; corrigida a consulta, o reenvio passou a ser absorvido, com silver e gold idênticas por checksum (ADR-0012).
-- **Tudo como código.** Os pipelines e os jobs ficam num *bundle* (Declarative Automation Bundles, os antigos Databricks Asset Bundles). Catálogos e schemas são criados por SQL em `setup/`, porque no Free Edition a API não cria catálogos.
+- **Tudo como código.** Os pipelines, os jobs e o dashboard ficam num *bundle* (Declarative Automation Bundles, os antigos Databricks Asset Bundles). Catálogos e schemas são criados por SQL em `setup/`, porque no Free Edition a API não cria catálogos.
 - **Somente batch e serverless**, com uma execução por dia para caber na *fair usage quota* do Free Edition.
 
 ## Modelagem da fatia 1
@@ -103,6 +104,7 @@ Uma lição registrada no ADR-0010: toda *expectation* precisa dar `true` ou `fa
 | [0010](docs/adr/0010-pipeline-commercial-fatos-chaves-e-membro-desconhecido.md) | Pipeline `commercial`: chaves pela data do documento e motivo do membro desconhecido |
 | [0011](docs/adr/0011-dim-customer-tipo-1-pela-ultima-versao.md) | Atributos tipo 1 do cliente pela última versão, e não pela versão aberta |
 | [0012](docs/adr/0012-job-diario-extracao-simulada-idempotencia-e-verificacao.md) | Job diário: extração simulada e determinística do ERP, landing sem sobrescrita, idempotência provada e verificação de unicidade |
+| [0013](docs/adr/0013-dashboard-comercial-data-de-referencia-e-atualizacao-pelo-job.md) | Dashboard comercial no bundle: última data carregada como referência e atualização no fim do job diário (proposto) |
 
 Um ADR aceito não é reescrito: uma mudança entra por um ADR novo, que emenda ou substitui o antigo. Cada ADR responde "e em produção, faríamos diferente?" e "qual o custo com 10x e 100x o volume?". As regras em vigor estão resumidas numa página de [convenções](docs/convencoes.md).
 
@@ -126,13 +128,14 @@ Um *hook* ([`databricks_guard.py`](.claude/hooks/databricks_guard.py)) impede os
 ## Estrutura do repositório
 
 ```
-├── databricks.yml              # bundle: variáveis de catálogo e target
-├── resources/                  # pipelines core e commercial, job de carga inicial, job diário
+├── databricks.yml              # bundle: variáveis de catálogo e de warehouse, target
+├── resources/                  # pipelines core e commercial, job de carga inicial, job diário, dashboard
 ├── src/
 │   ├── pipelines/
 │   │   ├── core/{bronze,silver,gold}/   # SQL do pipeline core
 │   │   └── commercial/gold/             # SQL dos fatos
-│   └── jobs/                   # verificação de unicidade do job diário
+│   ├── jobs/                   # verificação de unicidade do job diário
+│   └── dashboards/             # JSON do dashboard AI/BI (edite só aqui, não na interface)
 ├── data_gen/erp/               # carga inicial sintética do ERP, simulador da extração diária e manifestos
 ├── setup/                      # criação de catálogos, schemas e volumes
 ├── docs/
@@ -147,7 +150,7 @@ Um *hook* ([`databricks_guard.py`](.claude/hooks/databricks_guard.py)) impede os
 
 ## Como executar
 
-Pré-requisitos: um workspace do Databricks Free Edition e o Databricks CLI autenticado num perfil. Troque o perfil `aws2` em `databricks.yml` pelo seu.
+Pré-requisitos: um workspace do Databricks Free Edition e o Databricks CLI (0.283.0 ou mais novo, por causa do catálogo padrão do dashboard) autenticado num perfil. Troque o perfil `aws2` em `databricks.yml` pelo seu. O bundle procura o SQL warehouse pelo nome, `Serverless Starter Warehouse`; se o seu tiver outro nome, ajuste a variável `warehouse_id`.
 
 1. Crie os catálogos, schemas e volumes rodando `setup/00_fase0_catalogs_schemas.sql` no SQL warehouse.
 2. Valide e implante o bundle:
@@ -163,7 +166,7 @@ Pré-requisitos: um workspace do Databricks Free Edition e o Databricks CLI aute
    ```bash
    databricks bundle run core --validate-only
    ```
-5. Rode o job diário: extração simulada do ERP → `core` → `commercial` → verificação de unicidade. Sem parâmetros, ele grava todas as extrações que faltam, da última na landing até hoje. Se a carga inicial ficou para trás há muitos dias, isso pode ser muita coisa para uma execução: o simulador tem timeout de 30 min. Para avançar aos poucos, passe uma `extraction_date` próxima da última extração. É o trade-off do ADR-0012: cada execução recalcula a janela do simulador, então avançar aos poucos custa mais no total e menos por execução.
+5. Rode o job diário: extração simulada do ERP → `core` → `commercial` → verificação de unicidade → atualização do dashboard. Sem parâmetros, ele grava todas as extrações que faltam, da última na landing até hoje. Se a carga inicial ficou para trás há muitos dias, isso pode ser muita coisa para uma execução: o simulador tem timeout de 30 min. Para avançar aos poucos, passe uma `extraction_date` próxima da última extração. É o trade-off do ADR-0012: cada execução recalcula a janela do simulador, então avançar aos poucos custa mais no total e menos por execução.
    ```bash
    databricks bundle run serra_azul_daily
    ```

@@ -12,7 +12,7 @@ As seções 1 a 4 descrevem a **carga inicial**; as contagens delas são as da c
 | Gerador da carga inicial | [`data_gen/erp/erp_initial_load.py`](../data_gen/erp/erp_initial_load.py), job `erp_initial_load` do bundle. **Não rodar de novo na landing real** (ADR-0012 D4) |
 | Extração diária | Desde 2026-10-20, uma por dia: [`data_gen/erp/erp_daily_extraction.py`](../data_gen/erp/erp_daily_extraction.py), tarefa `simulate_erp_extraction` do job `serra_azul_daily` (§5, ADR-0012) |
 | Gabaritos | `data_gen/erp/manifest_<dataset>.json`: contagem exata de cada sujeira injetada na carga inicial |
-| Reprodutível? | Sim. Toda aleatoriedade vem de hash da chave + semente `20261019`, e o Faker tem versão fixa (`faker==37.12.0`). Rodar de novo gera o mesmo conteúdo; cada extração diária é função só da sua data |
+| Reprodutível? | Sim. Toda aleatoriedade vem de hash da chave + semente `20261019`, e o Faker tem versão fixa (`faker==37.12.0`). Rodar de novo gera o mesmo conteúdo; cada extração diária é função da sua data e da versão do gerador (§5.8) |
 
 ---
 
@@ -168,7 +168,7 @@ Total gerado: **4,2 mi hl** em 18 meses (~2,8 mi hl/ano).
 | Documento com dígito verificador inválido | 735 clientes | Flag `is_document_valid` na silver; o cliente não é descartado |
 | Cidade com grafia diferente da do CEP ("Sta Luzia", "Sao Paulo", "B. Horizonte"…) | 7.264 versões | Cidade substituída pela da referência de CEP, **antes** de calcular versões |
 | Versões que só mudam contato, razão social, status ou grafia | 72.650 versões → 47.166 na `dim_customer` | Fundidas: só atributos rastreados geram versão (ADR-0006) |
-| Clientes que ainda não entraram no cadastro (pedido chega antes) | 227 clientes / 313 pedidos | FK órfã → membro `-1` na gold; corrige quando o cadastro chegar. O cadastro deles chega nas extrações diárias de 2026-10-20 a 2026-10-29 (§5). Nos fatos, com `_is_customer_id_known = false`: em 2026-10-21, 1.070 itens no `fact_sales` e 1.084 no `fact_invoice` (ADR-0010); em 2026-10-27, depois de 8 extrações diárias, 254 e 256 (ADR-0012) |
+| Clientes que ainda não entraram no cadastro (pedido chega antes) | 227 clientes / 313 pedidos | FK órfã → membro `-1` na gold; corrige quando o cadastro chegar. O cadastro deles chega nas extrações diárias de 2026-10-20 a 2026-10-29 (§5). Nos fatos, com `_is_customer_id_known = false`: em 2026-10-21, 1.070 itens no `fact_sales` e 1.084 no `fact_invoice` (ADR-0010); em 2026-10-27, depois de 8 extrações diárias, 254 e 256 (ADR-0012); em 2026-11-01, depois de 13, 0 e 0 (ADR-0013) |
 
 ### 3.2 `produtos`: cadastro de produtos (versionado)
 
@@ -376,15 +376,16 @@ Depois do go-live, o job `serra_azul_daily` faz o papel do ERP. A tarefa `simula
 | `cep_municipio` | — | Não é reenviado: carga única |
 
 - **Mesmo mundo da carga inicial:** as fórmulas são as mesmas (o simulador importa o gerador da carga), e a numeração continua sem buraco: pedidos a partir de `PV00805154`, NFs a partir de `100838958`.
-- **Determinística:** o conteúdo de cada extração é função só da sua data.
+- **Determinística:** o conteúdo de cada extração é função da sua data e da versão do gerador. Uma correção no gerador vale para as extrações seguintes; as já gravadas não são regeradas (§5.8).
+- **Regra de corte:** a extração E traz só o que aconteceu até o fim de D = E − 1. Todo evento entra na foto a partir da sua data; um pedido cancelado em D + 1 chega ABERTO em E e CANCELADO na extração seguinte. As extrações de 2026-10-20 a 2026-11-01 violam essa regra (§5.8).
 
 ### 5.2 Arquivos
 
 - **Caminho:** `/Volumes/core/landing/erp/<dataset>/<E>/<dataset>.parquet`, um arquivo por dataset e por data.
-- **Reenvio:** `<dataset>_reenvio.parquet`, na mesma pasta e com o mesmo conteúdo (parâmetro `resend=true`). Simula o reenvio de integração do ERP. Existe para a extração de 2026-10-27 (prova de idempotência). O sufixo é fixo por data: o próximo reenvio de teste precisa ser de outra data.
+- **Reenvio:** `<dataset>_reenvio.parquet`, na mesma pasta e com o mesmo conteúdo (parâmetro `resend=true`). Simula o reenvio de integração do ERP. Existe para a extração de 2026-10-27 (prova de idempotência). O sufixo é fixo por data: o próximo reenvio de teste precisa ser de outra data, **a partir de 2026-11-02**. Um reenvio de data até 2026-11-01 sairia diferente do original nos pedidos do defeito de corte (§5.8).
 - **Nenhum arquivo é sobrescrito ou regravado,** salvo para o direito ao esquecimento (LGPD). A carga inicial (2026-10-19) continua nos arquivos `part-<uuid>` em que foi gravada.
 - **PII:** cada extração de `clientes_pdv` traz a PII de todos os clientes. Por isso a landing e a bronze guardam uma cópia da PII por dia até a retenção do ADR-0007 ganhar rotina (ADR-0012).
-- **Catch-up:** o simulador grava todas as extrações que faltam até a data alvo. A primeira execução, em 2026-10-27, gravou 8 de uma vez (2026-10-20 a 2026-10-27).
+- **Catch-up:** o simulador grava todas as extrações que faltam até a data alvo. A primeira execução, em 2026-10-27, gravou 8 de uma vez (2026-10-20 a 2026-10-27). A de 2026-11-01 gravou 5 (2026-10-28 a 2026-11-01).
 
 ### 5.3 Linhas por extração
 
@@ -398,11 +399,20 @@ Depois do go-live, o job `serra_azul_daily` faz o papel do ERP. A tarefa `simula
 | 2026-10-25 | 2026-10-24 (sáb) | 2.385 | 2.571 | 1.887 | 6.823 | 72.887 | 126 | 505 |
 | 2026-10-26 | 2026-10-25 (dom) | 893 | 165 | 854 | 2.978 | 72.932 | 126 | 505 |
 | 2026-10-27 | 2026-10-26 (seg) | 2.760 | 9.012 | 1.239 | 4.295 | 72.976 | 126 | 505 |
-| **Total** | | **24.469** | **56.003** | **14.667** | **52.704** | **582.638** | **1.008** | **4.040** |
+| **Execução de 2026-10-27** (8 extrações) | | **24.469** | **56.003** | **14.667** | **52.704** | **582.638** | **1.008** | **4.040** |
+| 2026-10-28 | 2026-10-27 (ter) | 3.621 | 8.799 | 2.104 | 7.789 | 73.001 | 126 | 505 |
+| 2026-10-29 | 2026-10-28 (qua) | 3.850 | 8.242 | 2.392 | 8.725 | 73.035 | 126 | 505 |
+| 2026-10-30 | 2026-10-29 (qui) | 3.999 | 8.896 | 2.439 | 8.764 | 73.035 | 126 | 505 |
+| 2026-10-31 | 2026-10-30 (sex) | 4.137 | 8.944 | 2.584 | 9.194 | 73.035 | 126 | 505 |
+| 2026-11-01 | 2026-10-31 (sáb) | 2.310 | 2.743 | 1.808 | 6.643 | 73.035 | 126 | 505 |
+| **Execução de 2026-11-01** (5 extrações) | | **17.917** | **37.624** | **11.327** | **41.115** | **365.141** | **630** | **2.525** |
+| **Total** (13 extrações) | | **42.386** | **93.627** | **25.994** | **93.819** | **947.779** | **1.638** | **6.565** |
 
-- **Reenvio de 2026-10-27:** as mesmas contagens da linha de 2026-10-27, 90.913 linhas nos 7 datasets.
-- **Sábado fraco e domingo quase zero**, como na carga (§2): o dia de pedido mais fraco é o domingo, 2026-10-25 (165 itens).
-- **A bronze cresceu exatamente o total** de cada coluna na primeira execução (ADR-0012, Resultados).
+- **Reenvio de 2026-10-27:** as mesmas contagens da linha de 2026-10-27, 90.913 linhas nos 7 datasets. Fica fora dos totais.
+- **Sábado fraco e domingo quase zero**, como na carga (§2): o dia de pedido mais fraco é o domingo, 2026-10-25 (165 itens). Os sábados 2026-10-24 e 2026-10-31 têm 2.571 e 2.743 itens.
+- **A bronze cresceu exatamente o subtotal de cada execução**, em cada coluna: na de 2026-10-27 (ADR-0012, Resultados) e na de 2026-11-01 (ADR-0013, Resultados). As contagens de 2026-10-28 a 2026-11-01 vêm do log do simulador (run `520956708131314`), um arquivo por dataset e extração.
+- **`clientes_pdv` estabilizou em 73.035 versões** a partir da extração de 2026-10-29, a última data de chegada dos clientes fora da carga (§5.4).
+- **Janela do simulador na execução de 2026-11-01:** pedidos de 2026-09-04 a 2026-10-31 (58 dias), 97.914 pedidos. A numeração continua depois de 733.025 pedidos e 799.433 NFs anteriores à janela (log do simulador). A janela cresce um dia por dia de calendário: eram 53 dias em 2026-10-27 (ADR-0012 D2).
 
 ### 5.4 Clientes fora da carga
 
@@ -411,12 +421,13 @@ Depois do go-live, o job `serra_azul_daily` faz o papel do ERP. A tarefa `simula
 - Em versões, a extração passa de 72.650 (carga) para 72.976 (2026-10-27): 326 versões dos clientes que já chegaram.
 - No ensaio de 2026-10-27, 113 clientes tinham chegado até 2026-10-24, e nenhum cliente da carga sumiu.
 - **Nos fatos, em 2026-10-27:** 254 itens no `fact_sales` e 256 no `fact_invoice` continuam com cliente `-1` e `_is_customer_id_known = false`, todos por cliente ainda não cadastrado. Eram 1.070 e 1.084 antes da extração diária.
+- **Em 2026-11-01**, depois de 13 extrações: os 227 clientes chegaram, e o cliente `-1` caiu para 0 nos dois fatos (ADR-0013).
 
 ### 5.5 Sujeiras
 
 | Sujeira | Na extração diária | Tratamento |
 |---|---|---|
-| Duplicata exata, quase-duplicata, item negativo, centavos | Mesmo sorteio da carga, pela chave do registro. No ensaio de 2026-10-27: duplicata exata 1,55% a 2,04%; quase-duplicata ~0,3%; item negativo ~0,1%; centavos ~3%. Nas 8 extrações reais: 52 itens de pedido negativos | Os mesmos da carga (§3). Os 52 negativos foram descartados por `positive_quantity_and_amount` (event log de 2026-10-27) |
+| Duplicata exata, quase-duplicata, item negativo, centavos | Mesmo sorteio da carga, pela chave do registro. No ensaio de 2026-10-27: duplicata exata 1,55% a 2,04%; quase-duplicata ~0,3%; item negativo ~0,1%; centavos ~3%. Nas 8 extrações reais: 52 itens de pedido negativos; nas 5 de 2026-10-28 a 2026-11-01: 46 | Os mesmos da carga (§3). Os negativos foram descartados por `positive_quantity_and_amount`: 52 no event log de 2026-10-27 e 46 no de 2026-11-01 |
 | Item de NF com quantidade 0 (2ª NF do faturamento parcial) | 71 itens (54 pedidos, todos de venda), nas extrações de 2026-10-20 a 2026-10-22. São a 2ª NF dos pedidos parciais cuja 1ª NF já estava na carga, com as 2 unidades. Depois de 2026-10-22, nenhum | Descartado na silver (`positive_quantity`, `DROP ROW`): 71 descartados no event log de 2026-10-27. A regra corrigida do gerador vale só para pedidos cuja 1ª NF sai depois de 2026-10-18 (ADR-0012 D10) |
 | Reenvio da extração inteira (`_reenvio`) | Só quando o job roda com `resend=true` | Silver de fatos: `AUTO CDC`. Silver de cadastros: linhas idênticas juntadas (`GROUP BY ALL`, ADR-0012 D5) |
 
@@ -440,6 +451,29 @@ A extração de 2026-10-19 regerada pelo simulador foi comparada linha a linha (
 | Extração de 2026-10-19 regerada pelo simulador × recorte do dia 2026-10-18 da carga | 0 diferenças nos 7 datasets |
 | Quantidade faturada maior que a pedida | 0 entre 2.913.332 itens de pedido com NF de venda (carga + ensaio) |
 | Numeração | Sem buraco: pedidos 805154 a 817326; NFs 100838958 a 100849644 |
+
+### 5.8 Defeito de corte nas extrações de 2026-10-20 a 2026-11-01 (corrigido)
+
+- **O defeito:** a função `order_status_as_of`, do gerador da carga inicial, que o simulador usa, marcava CANCELADO o pedido com cancelamento antes do faturamento (`cancela_antes`) sem comparar `dt_cancela` com a data da foto. O cancelamento de D + 1 vazava para a extração E = D + 1, com `dt_atualizacao` em E. A extração seguinte o trazia de novo, agora corretamente.
+- **Achado em 2026-11-01**, na revisão do ADR-0013: o dia 2026-10-26 visto em 2026-11-01 tinha perdido só 2 pedidos em relação ao visto em 2026-10-27, contra ~34 esperados.
+- **Medido na bronze:** linhas de `pedidos_cab` com data depois de D, todas CANCELADO, nunca mais de 1 dia à frente.
+
+| Extração | Linhas vazadas | Extração | Linhas vazadas |
+|---|---|---|---|
+| 2026-10-20 | 27 | 2026-10-27 | 26 |
+| 2026-10-21 | 36 | 2026-10-28 | 23 |
+| 2026-10-22 | 23 | 2026-10-29 | 23 |
+| 2026-10-23 | 20 | 2026-10-30 | 21 |
+| 2026-10-24 | 39 | 2026-10-31 | 16 |
+| 2026-10-25 | 5 | 2026-11-01 | 8 |
+| 2026-10-26 | 0 | **Total** | **267** |
+
+- Carga inicial (2026-10-19): 0. `pedidos_itens`, `notas_fiscais` e `notas_fiscais_itens`: 0.
+- **Efeito:** o estado final da silver e da gold é correto, porque o `AUTO CDC` absorve a repetição. Mas a foto do D-1 saía sem esses cancelamentos de D + 1, o que contraria a regra de corte (§5.1) e escondia parte do viés de maturação do dashboard (ADR-0013 D3).
+- **Correção** (2026-11-01, implantada): `cancelado = (cancela_antes AND dt_cancela <= as_of) OR cancelado_depois`, na função compartilhada. Até `dt_cancela`, o pedido está ABERTO. A carga inicial não muda: nenhum pedido de 2026-10-18 tem `dt_cancela` em 2026-10-19.
+- **Validação:** um oráculo local (PySpark 3.5.5, `faker==37.12.0`) reproduz a bronze exatamente com o código antigo e dá 0 vazamento com o novo. A única diferença são os pedidos vazados, que passam a chegar ABERTO.
+- **Confirmada em execução real (2026-11-03):** as extrações de 2026-11-02 e 2026-11-03 não trazem nenhuma linha depois de D. A de 2026-11-02 não distinguia os códigos (D é domingo); a de 2026-11-03 sim (449 linhas; o código antigo vazaria 3).
+- **As extrações já gravadas ficam como estão:** a landing não é regravada (ADR-0012 D4). Um reenvio de uma data até 2026-11-01 sairia diferente do original, com os pedidos vazados ABERTO. Na silver, é inofensivo (o `SEQUENCE BY` mantém o mais novo), mas o reenvio deixaria de ser idêntico. Provas de reenvio, só a partir de 2026-11-02.
 
 ---
 

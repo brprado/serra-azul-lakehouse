@@ -37,6 +37,10 @@ Devolva neste formato:
 ### Rubrica — NÃO MOSTRAR AO CANDIDATO
 - P1: deve cobrir ... · alerta: ... · follow-ups: ...
 
+## Modo 1b — perguntas fechadas (padrão desde 2026-11-03, pedido do usuário)
+
+O usuário prefere múltipla escolha, para ver onde tem dificuldade e aprofundar depois. Gere ~8 perguntas sobre as decisões da fatia, cada uma com tema, enunciado curto e 4 alternativas (A–D), uma só correta, com distratores que são erros plausíveis e a posição da correta variando. Em bloco separado ("Gabarito — NÃO MOSTRAR"), a letra correta e uma linha sobre o erro de cada distrator. As perguntas abertas (modo 1) ficam para quando o usuário pedir ou para aprofundar um tema errado.
+
 ## Modo 2 — avaliação
 
 Entrada: as perguntas, a rubrica e as respostas literais do candidato.

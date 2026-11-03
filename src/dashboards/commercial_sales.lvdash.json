@@ -1,0 +1,2847 @@
+{
+  "datasets": [
+    {
+      "name": "vendas_datas",
+      "displayName": "Vendas: datas disponíveis",
+      "queryLines": [
+        "-- Opções do filtro \"Data de referência\": a opção padrão e cada data de pedido carregada (texto AAAA-MM-DD).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "SELECT 'Última data carregada' AS data_ref\n",
+        "UNION ALL\n",
+        "SELECT DISTINCT CAST(order_date AS STRING) FROM commercial.gold.fact_sales WHERE order_date IS NOT NULL\n",
+        "ORDER BY data_ref DESC"
+      ]
+    },
+    {
+      "name": "vendas_frescor",
+      "displayName": "Vendas: frescor",
+      "queryLines": [
+        "-- Frescor: só propriedades do dado, nada calculado com a data de hoje. O dashboard publicado guarda o resultado em\n",
+        "-- cache; um \"atraso em dias\" seria o da hora da consulta, e não o da hora em que o diretor olha.\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH sales AS (SELECT * FROM commercial.gold.fact_sales),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(order_date)) AS ref_date,\n",
+        "         max(order_date) AS last_date,\n",
+        "         max(_updated_at) AS last_updated_at\n",
+        "  FROM sales\n",
+        ")\n",
+        "SELECT\n",
+        "  concat(date_format(ref.ref_date, 'dd/MM/yyyy'), ' (', d.day_name, ')') AS data_referencia,\n",
+        "  concat(date_format(date_sub(ref.ref_date, 7), 'dd/MM/yyyy'), ' (', w.day_name, ')') AS data_comparacao,\n",
+        "  date_format(ref.last_date, 'dd/MM/yyyy') AS dados_ate,\n",
+        "  -- _updated_at é um instante; a conversão parte do fuso da sessão, qualquer que seja ele.\n",
+        "  date_format(convert_timezone(current_timezone(), 'America/Sao_Paulo', ref.last_updated_at), 'dd/MM/yyyy HH:mm') AS carregados_em\n",
+        "FROM ref\n",
+        "LEFT JOIN dim_date d ON d.date = ref.ref_date\n",
+        "LEFT JOIN dim_date w ON w.date = date_sub(ref.ref_date, 7)"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "vendas_kpi",
+      "displayName": "Vendas: indicadores (data de referência e semana anterior)",
+      "queryLines": [
+        "-- Indicadores da data de referência e do mesmo dia da semana anterior (ref - 7), uma coluna por período.\n",
+        "-- Grão: dia x região x marca x canal x pedido. O pedido fica no grão porque \"pedidos\" é contagem distinta: um pedido\n",
+        "-- com duas marcas somaria 2 no grão sem pedido. São só dois dias (~11 mil linhas em 26/10, uma segunda).\n",
+        "-- Data de referência: a escolhida no filtro ou, por padrão (\"Última data carregada\"), a maior order_date do fato.\n",
+        "-- Não é \"ontem\" pelo relógio: se o job atrasar, o painel mostra o último dia carregado, e o frescor diz qual é.\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH sales AS (SELECT * FROM commercial.gold.fact_sales),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(order_date)) AS ref_date\n",
+        "  FROM sales\n",
+        ")\n",
+        "SELECT\n",
+        "  f.order_date,\n",
+        "  -- Região comercial do vendedor \"como era\" na data do pedido (ADR-0006 §7); -1 aparece como DESCONHECIDA.\n",
+        "  coalesce(r.commercial_region, 'DESCONHECIDA') AS commercial_region,\n",
+        "  coalesce(p.brand, 'DESCONHECIDA') AS brand,\n",
+        "  coalesce(c.sales_channel, 'DESCONHECIDO') AS sales_channel,\n",
+        "  -- Região geográfica do cliente na data do pedido (ADR-0006 §7): filtro secundário, para perguntas de mercado.\n",
+        "  -- Não muda o grão: o pedido determina o cliente, e a customer_key é a mesma em todos os itens dele.\n",
+        "  coalesce(c.geo_region, 'DESCONHECIDA') AS geo_region,\n",
+        "  CASE WHEN f.order_date = ref.ref_date THEN f.order_id END AS order_id_ref,\n",
+        "  CASE WHEN f.order_date = date_sub(ref.ref_date, 7) THEN f.order_id END AS order_id_prev,\n",
+        "  sum(CASE WHEN f.order_date = ref.ref_date THEN f.net_amount ELSE 0 END) AS net_amount_ref,\n",
+        "  sum(CASE WHEN f.order_date = date_sub(ref.ref_date, 7) THEN f.net_amount ELSE 0 END) AS net_amount_prev,\n",
+        "  sum(CASE WHEN f.order_date = ref.ref_date THEN f.volume_hl ELSE 0 END) AS volume_hl_ref,\n",
+        "  sum(CASE WHEN f.order_date = date_sub(ref.ref_date, 7) THEN f.volume_hl ELSE 0 END) AS volume_hl_prev\n",
+        "FROM sales f\n",
+        "JOIN ref ON f.order_date IN (ref.ref_date, date_sub(ref.ref_date, 7))\n",
+        "-- Junções só pela _key, resolvida no pipeline (ADR-0006 §5). LEFT JOIN: o total não depende de a dimensão estar\n",
+        "-- completa; uma _key sem linha cai no mesmo balde do -1.\n",
+        "LEFT JOIN dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key\n",
+        "LEFT JOIN dim_product p ON p.product_key = f.product_key\n",
+        "LEFT JOIN dim_customer c ON c.customer_key = f.customer_key\n",
+        "WHERE NOT f.is_cancelled\n",
+        "GROUP BY ALL"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "var_net_amount",
+          "description": "Venda líquida (R$): data de referência menos o mesmo dia da semana anterior",
+          "expression": "SUM(`net_amount_ref`) - SUM(`net_amount_prev`)"
+        },
+        {
+          "displayName": "var_net_amount_pct",
+          "description": "Venda líquida (R$): variação relativa ao mesmo dia da semana anterior (0,1 = 10%)",
+          "expression": "(SUM(`net_amount_ref`) - SUM(`net_amount_prev`)) / NULLIF(SUM(`net_amount_prev`), 0)"
+        },
+        {
+          "displayName": "var_volume_hl",
+          "description": "Volume (hL): data de referência menos o mesmo dia da semana anterior",
+          "expression": "SUM(`volume_hl_ref`) - SUM(`volume_hl_prev`)"
+        },
+        {
+          "displayName": "var_volume_hl_pct",
+          "description": "Volume (hL): variação relativa ao mesmo dia da semana anterior (0,1 = 10%)",
+          "expression": "(SUM(`volume_hl_ref`) - SUM(`volume_hl_prev`)) / NULLIF(SUM(`volume_hl_prev`), 0)"
+        },
+        {
+          "displayName": "var_orders",
+          "description": "Pedidos: data de referência menos o mesmo dia da semana anterior",
+          "expression": "COUNT(DISTINCT `order_id_ref`) - COUNT(DISTINCT `order_id_prev`)"
+        },
+        {
+          "displayName": "var_orders_pct",
+          "description": "Pedidos: variação relativa ao mesmo dia da semana anterior (0,1 = 10%)",
+          "expression": "(COUNT(DISTINCT `order_id_ref`) - COUNT(DISTINCT `order_id_prev`)) / NULLIF(COUNT(DISTINCT `order_id_prev`), 0)"
+        }
+      ]
+    },
+    {
+      "name": "vendas_combinacao",
+      "displayName": "Vendas: região x marca x canal x região do cliente",
+      "queryLines": [
+        "-- Tabela região x marca x canal da data de referência, já agregada (uma linha por combinação, ~50 a 60 linhas).\n",
+        "-- A região geográfica do cliente entra na combinação para o filtro da página alcançar a tabela (ADR-0006 §7).\n",
+        "-- \"Pedidos\" é contagem distinta dentro da combinação; não some a coluna entre linhas (um pedido tem várias marcas).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH sales AS (SELECT * FROM commercial.gold.fact_sales),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(order_date)) AS ref_date\n",
+        "  FROM sales\n",
+        "),\n",
+        "combination AS (\n",
+        "  SELECT\n",
+        "    coalesce(r.commercial_region, 'DESCONHECIDA') AS commercial_region,\n",
+        "    coalesce(p.brand, 'DESCONHECIDA') AS brand,\n",
+        "    coalesce(c.sales_channel, 'DESCONHECIDO') AS sales_channel,\n",
+        "    coalesce(c.geo_region, 'DESCONHECIDA') AS geo_region,\n",
+        "    sum(CASE WHEN f.order_date = ref.ref_date THEN f.net_amount ELSE 0 END) AS net_amount_ref,\n",
+        "    sum(CASE WHEN f.order_date = ref.ref_date THEN f.volume_hl ELSE 0 END) AS volume_hl_ref,\n",
+        "    count(DISTINCT CASE WHEN f.order_date = ref.ref_date THEN f.order_id END) AS orders_ref,\n",
+        "    sum(CASE WHEN f.order_date = date_sub(ref.ref_date, 7) THEN f.net_amount ELSE 0 END) AS net_amount_prev\n",
+        "  FROM sales f\n",
+        "  JOIN ref ON f.order_date IN (ref.ref_date, date_sub(ref.ref_date, 7))\n",
+        "  LEFT JOIN dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key\n",
+        "  LEFT JOIN dim_product p ON p.product_key = f.product_key\n",
+        "  LEFT JOIN dim_customer c ON c.customer_key = f.customer_key\n",
+        "  WHERE NOT f.is_cancelled\n",
+        "  GROUP BY ALL\n",
+        ")\n",
+        "SELECT *, try_divide(net_amount_ref - net_amount_prev, net_amount_prev) AS net_amount_var_pct\n",
+        "FROM combination\n",
+        "ORDER BY net_amount_ref DESC"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "vendas_serie",
+      "displayName": "Vendas: série diária de 8 semanas",
+      "queryLines": [
+        "-- Série diária das 8 semanas (56 dias) que terminam na data de referência, por dia x região x marca x canal x região\n",
+        "-- geográfica do cliente (a do filtro da página, ADR-0006 §7).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH sales AS (SELECT * FROM commercial.gold.fact_sales),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(order_date)) AS ref_date\n",
+        "  FROM sales\n",
+        ")\n",
+        "SELECT\n",
+        "  f.order_date,\n",
+        "  coalesce(r.commercial_region, 'DESCONHECIDA') AS commercial_region,\n",
+        "  coalesce(p.brand, 'DESCONHECIDA') AS brand,\n",
+        "  coalesce(c.sales_channel, 'DESCONHECIDO') AS sales_channel,\n",
+        "  coalesce(c.geo_region, 'DESCONHECIDA') AS geo_region,\n",
+        "  sum(f.net_amount) AS net_amount,\n",
+        "  sum(f.volume_hl) AS volume_hl\n",
+        "FROM sales f\n",
+        "JOIN ref ON f.order_date BETWEEN date_sub(ref.ref_date, 55) AND ref.ref_date\n",
+        "LEFT JOIN dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key\n",
+        "LEFT JOIN dim_product p ON p.product_key = f.product_key\n",
+        "LEFT JOIN dim_customer c ON c.customer_key = f.customer_key\n",
+        "WHERE NOT f.is_cancelled\n",
+        "GROUP BY ALL\n",
+        "ORDER BY f.order_date"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "faturamento_datas",
+      "displayName": "Faturamento: datas disponíveis",
+      "queryLines": [
+        "-- Opções do filtro \"Data de referência\": a opção padrão e cada data de emissão de NF carregada (texto AAAA-MM-DD).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "SELECT 'Última data carregada' AS data_ref\n",
+        "UNION ALL\n",
+        "SELECT DISTINCT CAST(issue_date AS STRING) FROM commercial.gold.fact_invoice WHERE issue_date IS NOT NULL\n",
+        "ORDER BY data_ref DESC"
+      ]
+    },
+    {
+      "name": "faturamento_frescor",
+      "displayName": "Faturamento: frescor",
+      "queryLines": [
+        "-- Frescor do faturamento: só propriedades do dado (ver o dataset de frescor das vendas).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH invoice AS (SELECT * FROM commercial.gold.fact_invoice),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(issue_date)) AS ref_date,\n",
+        "         max(issue_date) AS last_date,\n",
+        "         max(_updated_at) AS last_updated_at\n",
+        "  FROM invoice\n",
+        ")\n",
+        "SELECT\n",
+        "  concat(date_format(ref.ref_date, 'dd/MM/yyyy'), ' (', d.day_name, ')') AS data_referencia,\n",
+        "  concat(date_format(date_sub(ref.ref_date, 7), 'dd/MM/yyyy'), ' (', w.day_name, ')') AS data_comparacao,\n",
+        "  date_format(ref.last_date, 'dd/MM/yyyy') AS dados_ate,\n",
+        "  date_format(convert_timezone(current_timezone(), 'America/Sao_Paulo', ref.last_updated_at), 'dd/MM/yyyy HH:mm') AS carregados_em\n",
+        "FROM ref\n",
+        "LEFT JOIN dim_date d ON d.date = ref.ref_date\n",
+        "LEFT JOIN dim_date w ON w.date = date_sub(ref.ref_date, 7)"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "faturamento_kpi",
+      "displayName": "Faturamento: indicadores (data de referência e semana anterior)",
+      "queryLines": [
+        "-- Faturamento (NFs) da data de referência e do mesmo dia da semana anterior, pela data de emissão (issue_date).\n",
+        "-- O sinal da devolução já vem do fato (ADR-0010 D5): a soma de net_amount é o faturamento líquido de devoluções.\n",
+        "-- Grão: dia x região x marca x canal x região geográfica do cliente, já agregado (as medidas são todas somas).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH invoice AS (SELECT * FROM commercial.gold.fact_invoice),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(issue_date)) AS ref_date\n",
+        "  FROM invoice\n",
+        ")\n",
+        "SELECT\n",
+        "  f.issue_date,\n",
+        "  -- Vendedor resolvido na data do pedido de origem (ADR-0010 D1): a mesma região comercial do fact_sales.\n",
+        "  coalesce(r.commercial_region, 'DESCONHECIDA') AS commercial_region,\n",
+        "  coalesce(p.brand, 'DESCONHECIDA') AS brand,\n",
+        "  -- Cliente da NF, na versão da emissão (ADR-0010 D1b): o canal e a região geográfica (filtro da página, ADR-0006 §7).\n",
+        "  coalesce(c.sales_channel, 'DESCONHECIDO') AS sales_channel,\n",
+        "  coalesce(c.geo_region, 'DESCONHECIDA') AS geo_region,\n",
+        "  sum(CASE WHEN f.issue_date = ref.ref_date THEN f.net_amount ELSE 0 END) AS net_amount_ref,\n",
+        "  sum(CASE WHEN f.issue_date = date_sub(ref.ref_date, 7) THEN f.net_amount ELSE 0 END) AS net_amount_prev,\n",
+        "  -- Devoluções com o sinal do fato (negativas): somadas às vendas, dão o faturamento líquido.\n",
+        "  sum(CASE WHEN f.issue_date = ref.ref_date AND f.invoice_type = 'RETURN' THEN f.net_amount ELSE 0 END) AS return_amount_ref,\n",
+        "  sum(CASE WHEN f.issue_date = date_sub(ref.ref_date, 7) AND f.invoice_type = 'RETURN' THEN f.net_amount ELSE 0 END) AS return_amount_prev\n",
+        "FROM invoice f\n",
+        "JOIN ref ON f.issue_date IN (ref.ref_date, date_sub(ref.ref_date, 7))\n",
+        "LEFT JOIN dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key\n",
+        "LEFT JOIN dim_product p ON p.product_key = f.product_key\n",
+        "LEFT JOIN dim_customer c ON c.customer_key = f.customer_key\n",
+        "GROUP BY ALL"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "columns": [
+        {
+          "displayName": "var_net_amount",
+          "description": "Faturamento líquido (R$): data de referência menos o mesmo dia da semana anterior",
+          "expression": "SUM(`net_amount_ref`) - SUM(`net_amount_prev`)"
+        },
+        {
+          "displayName": "var_net_amount_pct",
+          "description": "Faturamento líquido (R$): variação relativa ao mesmo dia da semana anterior (0,1 = 10%)",
+          "expression": "(SUM(`net_amount_ref`) - SUM(`net_amount_prev`)) / NULLIF(SUM(`net_amount_prev`), 0)"
+        },
+        {
+          "displayName": "var_return_amount",
+          "description": "Devoluções (R$): data de referência menos o mesmo dia da semana anterior",
+          "expression": "SUM(`return_amount_ref`) - SUM(`return_amount_prev`)"
+        },
+        {
+          "displayName": "var_return_amount_pct",
+          "description": "Devoluções (R$): variação relativa ao mesmo dia da semana anterior (0,1 = 10%)",
+          "expression": "(SUM(`return_amount_ref`) - SUM(`return_amount_prev`)) / NULLIF(SUM(`return_amount_prev`), 0)"
+        }
+      ]
+    },
+    {
+      "name": "faturamento_serie",
+      "displayName": "Faturamento: série diária de 8 semanas",
+      "queryLines": [
+        "-- Série diária do faturamento líquido nas 8 semanas (56 dias) que terminam na data de referência, com a região\n",
+        "-- geográfica do cliente da NF na emissão (filtro da página, ADR-0006 §7).\n",
+        "-- Único ponto com o catálogo do domínio escrito: o bundle define um só catálogo padrão por dashboard (o do core).\n",
+        "WITH invoice AS (SELECT * FROM commercial.gold.fact_invoice),\n",
+        "ref AS (\n",
+        "  SELECT coalesce(try_to_date(:data_ref, 'yyyy-MM-dd'), max(issue_date)) AS ref_date\n",
+        "  FROM invoice\n",
+        ")\n",
+        "SELECT\n",
+        "  f.issue_date,\n",
+        "  coalesce(r.commercial_region, 'DESCONHECIDA') AS commercial_region,\n",
+        "  coalesce(p.brand, 'DESCONHECIDA') AS brand,\n",
+        "  coalesce(c.sales_channel, 'DESCONHECIDO') AS sales_channel,\n",
+        "  coalesce(c.geo_region, 'DESCONHECIDA') AS geo_region,\n",
+        "  sum(f.net_amount) AS net_amount,\n",
+        "  sum(CASE WHEN f.invoice_type = 'RETURN' THEN f.net_amount ELSE 0 END) AS return_amount\n",
+        "FROM invoice f\n",
+        "JOIN ref ON f.issue_date BETWEEN date_sub(ref.ref_date, 55) AND ref.ref_date\n",
+        "LEFT JOIN dim_sales_rep r ON r.sales_rep_key = f.sales_rep_key\n",
+        "LEFT JOIN dim_product p ON p.product_key = f.product_key\n",
+        "LEFT JOIN dim_customer c ON c.customer_key = f.customer_key\n",
+        "GROUP BY ALL\n",
+        "ORDER BY f.issue_date"
+      ],
+      "parameters": [
+        {
+          "displayName": "data_ref",
+          "keyword": "data_ref",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Última data carregada"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "vendas",
+      "displayName": "Vendas (pedidos)",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "cabecalho_vendas",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Vendas (pedidos)\n",
+                "\n",
+                "**Quanto vendi na data de referência, por região, marca e canal.** Padrão: a última data carregada, comparada com o mesmo dia da semana anterior (7 dias antes). Para ver outro dia, escolha a data no filtro.\n",
+                "\n",
+                "**Venda** = pedidos tirados no dia (data do pedido), sem os cancelados, pelo valor líquido dos itens (depois do desconto). Não é faturamento: NFs e devoluções estão na página *Faturamento (NFs)*, e os dois números não se somam. **Região comercial** = do vendedor na data do pedido (a estrutura das metas; as duas redes nacionais ficam em CONTAS NACIONAIS). **Região geográfica (cliente)** = onde fica o cliente na data do pedido, para perguntas de mercado (expansão no Nordeste). **Canal** = DIRETO, DISTRIBUIDOR ou REDE. DESCONHECIDA ou DESCONHECIDO = cadastro ausente ou fora da vigência na data do documento (ADR-0010); fica no total. A comparação com a meta ainda não tem fonte de dados.\n",
+                "\n",
+                "**Cancelamentos ainda chegam.** A venda exclui os pedidos cancelados até a carga, e ~1,5% do valor de um dia é cancelado nos dias seguintes (medido em outubro). A data de comparação, uma semana mais velha, já perdeu essa parte; a de referência, não. Por isso a variação sai ~1,5 p.p. mais alta em valor e volume e ~1,3 p.p. em pedidos."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_data_vendas",
+            "queries": [
+              {
+                "name": "vendas_datas_data_ref",
+                "query": {
+                  "datasetName": "vendas_datas",
+                  "fields": [
+                    {
+                      "name": "data_ref",
+                      "expression": "`data_ref`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_frescor_param_data_ref",
+                "query": {
+                  "datasetName": "vendas_frescor",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_kpi_param_data_ref",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_combinacao_param_data_ref",
+                "query": {
+                  "datasetName": "vendas_combinacao",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_serie_param_data_ref",
+                "query": {
+                  "datasetName": "vendas_serie",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "data_ref",
+                    "displayName": "Data de referência",
+                    "queryName": "vendas_datas_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "vendas_frescor_param_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "vendas_kpi_param_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "vendas_combinacao_param_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "vendas_serie_param_data_ref"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Data de referência",
+                "showDescription": true,
+                "description": "Padrão: a última data carregada"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_regiao_vendas",
+            "queries": [
+              {
+                "name": "vendas_kpi_commercial_region",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_combinacao_commercial_region",
+                "query": {
+                  "datasetName": "vendas_combinacao",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_serie_commercial_region",
+                "query": {
+                  "datasetName": "vendas_serie",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "commercial_region",
+                    "displayName": "Região comercial",
+                    "queryName": "vendas_kpi_commercial_region"
+                  },
+                  {
+                    "fieldName": "commercial_region",
+                    "displayName": "Região comercial",
+                    "queryName": "vendas_combinacao_commercial_region"
+                  },
+                  {
+                    "fieldName": "commercial_region",
+                    "displayName": "Região comercial",
+                    "queryName": "vendas_serie_commercial_region"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Região comercial"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 5,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_regiao_geo_vendas",
+            "queries": [
+              {
+                "name": "vendas_kpi_geo_region",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "geo_region",
+                      "expression": "`geo_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_combinacao_geo_region",
+                "query": {
+                  "datasetName": "vendas_combinacao",
+                  "fields": [
+                    {
+                      "name": "geo_region",
+                      "expression": "`geo_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_serie_geo_region",
+                "query": {
+                  "datasetName": "vendas_serie",
+                  "fields": [
+                    {
+                      "name": "geo_region",
+                      "expression": "`geo_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "geo_region",
+                    "displayName": "Região geográfica (cliente)",
+                    "queryName": "vendas_kpi_geo_region"
+                  },
+                  {
+                    "fieldName": "geo_region",
+                    "displayName": "Região geográfica (cliente)",
+                    "queryName": "vendas_combinacao_geo_region"
+                  },
+                  {
+                    "fieldName": "geo_region",
+                    "displayName": "Região geográfica (cliente)",
+                    "queryName": "vendas_serie_geo_region"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Região geográfica (cliente)"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 5,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_marca_vendas",
+            "queries": [
+              {
+                "name": "vendas_kpi_brand",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_combinacao_brand",
+                "query": {
+                  "datasetName": "vendas_combinacao",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_serie_brand",
+                "query": {
+                  "datasetName": "vendas_serie",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "brand",
+                    "displayName": "Marca",
+                    "queryName": "vendas_kpi_brand"
+                  },
+                  {
+                    "fieldName": "brand",
+                    "displayName": "Marca",
+                    "queryName": "vendas_combinacao_brand"
+                  },
+                  {
+                    "fieldName": "brand",
+                    "displayName": "Marca",
+                    "queryName": "vendas_serie_brand"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Marca"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 5,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_canal_vendas",
+            "queries": [
+              {
+                "name": "vendas_kpi_sales_channel",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_combinacao_sales_channel",
+                "query": {
+                  "datasetName": "vendas_combinacao",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "vendas_serie_sales_channel",
+                "query": {
+                  "datasetName": "vendas_serie",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "sales_channel",
+                    "displayName": "Canal",
+                    "queryName": "vendas_kpi_sales_channel"
+                  },
+                  {
+                    "fieldName": "sales_channel",
+                    "displayName": "Canal",
+                    "queryName": "vendas_combinacao_sales_channel"
+                  },
+                  {
+                    "fieldName": "sales_channel",
+                    "displayName": "Canal",
+                    "queryName": "vendas_serie_sales_channel"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Canal"
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 5,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "frescor_vendas",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_frescor",
+                  "fields": [
+                    {
+                      "name": "data_referencia",
+                      "expression": "`data_referencia`"
+                    },
+                    {
+                      "name": "data_comparacao",
+                      "expression": "`data_comparacao`"
+                    },
+                    {
+                      "name": "dados_ate",
+                      "expression": "`dados_ate`"
+                    },
+                    {
+                      "name": "carregados_em",
+                      "expression": "`carregados_em`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "data_referencia",
+                    "displayName": "Data de referência"
+                  },
+                  {
+                    "fieldName": "data_comparacao",
+                    "displayName": "Comparada com (mesmo dia da semana anterior)"
+                  },
+                  {
+                    "fieldName": "dados_ate",
+                    "displayName": "Dados até"
+                  },
+                  {
+                    "fieldName": "carregados_em",
+                    "displayName": "Carregados em (horário de Brasília)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Frescor dos dados",
+                "showDescription": true,
+                "description": "Dados até = última data de pedido carregada. Carregados em = quando o dado mais recente entrou no lakehouse."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_venda_liquida",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "displayName": "Venda líquida (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda líquida (R$)",
+                "showDescription": true,
+                "description": "Pedidos não cancelados na data de referência"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 9,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_volume",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(volume_hl_ref)",
+                      "expression": "SUM(`volume_hl_ref`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(volume_hl_ref)",
+                  "displayName": "Volume (hL)",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Volume (hL)",
+                "showDescription": true,
+                "description": "Hectolitros vendidos na data de referência"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 9,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_pedidos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "countdistinct(order_id_ref)",
+                      "expression": "COUNT(DISTINCT `order_id_ref`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "countdistinct(order_id_ref)",
+                  "displayName": "Pedidos",
+                  "format": {
+                    "type": "number",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 0
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pedidos",
+                "showDescription": true,
+                "description": "Pedidos distintos não cancelados"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 9,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_venda_liquida",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_net_amount)",
+                      "expression": "MEASURE(`var_net_amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_net_amount)",
+                  "displayName": "Venda: variação (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda: variação (R$)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_venda_liquida_pct",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_net_amount_pct)",
+                      "expression": "MEASURE(`var_net_amount_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_net_amount_pct)",
+                  "displayName": "Venda: variação (%)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda: variação (%)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 12,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_volume",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_volume_hl)",
+                      "expression": "MEASURE(`var_volume_hl`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_volume_hl)",
+                  "displayName": "Volume: variação (hL)",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Volume: variação (hL)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 12,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_volume_pct",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_volume_hl_pct)",
+                      "expression": "MEASURE(`var_volume_hl_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_volume_hl_pct)",
+                  "displayName": "Volume: variação (%)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Volume: variação (%)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 12,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_pedidos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_orders)",
+                      "expression": "MEASURE(`var_orders`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_orders)",
+                  "displayName": "Pedidos: variação"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pedidos: variação",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 12,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_pedidos_pct",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_orders_pct)",
+                      "expression": "MEASURE(`var_orders_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_orders_pct)",
+                  "displayName": "Pedidos: variação (%)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Pedidos: variação (%)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 12,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "vendas_por_regiao",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    },
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    },
+                    {
+                      "name": "sum(net_amount_prev)",
+                      "expression": "SUM(`net_amount_prev`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Venda líquida (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "commercial_region",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Região comercial"
+                },
+                "label": {
+                  "show": true
+                },
+                "extra": [
+                  {
+                    "fieldName": "sum(net_amount_prev)",
+                    "displayName": "Mesmo dia da semana anterior (R$)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda líquida por região comercial"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 15,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendas_por_marca",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    },
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    },
+                    {
+                      "name": "sum(net_amount_prev)",
+                      "expression": "SUM(`net_amount_prev`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Venda líquida (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "brand",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Marca"
+                },
+                "label": {
+                  "show": true
+                },
+                "extra": [
+                  {
+                    "fieldName": "sum(net_amount_prev)",
+                    "displayName": "Mesmo dia da semana anterior (R$)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda líquida por marca"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 15,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendas_por_canal",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_kpi",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    },
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    },
+                    {
+                      "name": "sum(net_amount_prev)",
+                      "expression": "SUM(`net_amount_prev`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Venda líquida (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sales_channel",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Canal"
+                },
+                "label": {
+                  "show": true
+                },
+                "extra": [
+                  {
+                    "fieldName": "sum(net_amount_prev)",
+                    "displayName": "Mesmo dia da semana anterior (R$)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda líquida por canal"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 15,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendas_serie_diaria",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_serie",
+                  "fields": [
+                    {
+                      "name": "daily(order_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `order_date`)"
+                    },
+                    {
+                      "name": "sum(net_amount)",
+                      "expression": "SUM(`net_amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(order_date)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Data do pedido"
+                },
+                "y": {
+                  "fieldName": "sum(net_amount)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Venda líquida (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Venda líquida diária: 8 semanas até a data de referência",
+                "showDescription": true,
+                "description": "Fins de semana e feriados vendem pouco: compare cada dia com o mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 21,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendas_regiao_marca_canal",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "vendas_combinacao",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    },
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    },
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    },
+                    {
+                      "name": "geo_region",
+                      "expression": "`geo_region`"
+                    },
+                    {
+                      "name": "net_amount_ref",
+                      "expression": "`net_amount_ref`"
+                    },
+                    {
+                      "name": "volume_hl_ref",
+                      "expression": "`volume_hl_ref`"
+                    },
+                    {
+                      "name": "orders_ref",
+                      "expression": "`orders_ref`"
+                    },
+                    {
+                      "name": "net_amount_prev",
+                      "expression": "`net_amount_prev`"
+                    },
+                    {
+                      "name": "net_amount_var_pct",
+                      "expression": "`net_amount_var_pct`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "commercial_region",
+                    "displayName": "Região comercial"
+                  },
+                  {
+                    "fieldName": "brand",
+                    "displayName": "Marca"
+                  },
+                  {
+                    "fieldName": "sales_channel",
+                    "displayName": "Canal"
+                  },
+                  {
+                    "fieldName": "geo_region",
+                    "displayName": "Região geográfica (cliente)"
+                  },
+                  {
+                    "fieldName": "net_amount_ref",
+                    "displayName": "Venda líquida (R$)",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "BRL",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "volume_hl_ref",
+                    "displayName": "Volume (hL)",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "orders_ref",
+                    "displayName": "Pedidos",
+                    "format": {
+                      "type": "number",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "net_amount_prev",
+                    "displayName": "Venda líquida no mesmo dia da semana anterior (R$)",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "BRL",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "net_amount_var_pct",
+                    "displayName": "Variação (%)",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Região comercial x marca x canal x região do cliente na data de referência",
+                "showDescription": true,
+                "description": "Pedidos contam uma vez por combinação: um pedido com duas marcas aparece nas duas linhas, então a coluna não se soma"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 27,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ]
+    },
+    {
+      "name": "faturamento",
+      "displayName": "Faturamento (NFs)",
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1",
+      "layout": [
+        {
+          "widget": {
+            "name": "cabecalho_faturamento",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Faturamento (NFs)\n",
+                "\n",
+                "**Quanto foi faturado na data de referência**, pela data de emissão da NF, comparado com o mesmo dia da semana anterior. Padrão: a última data de emissão carregada.\n",
+                "\n",
+                "**Faturado** = valor líquido das NFs emitidas no dia, já descontadas as devoluções (a NF de devolução entra com valor negativo). **Devoluções** = só as NFs de devolução, em valor negativo. Não some com a página *Vendas (pedidos)*: pedido e NF são eventos diferentes, em datas diferentes. **Região comercial** = do vendedor do pedido de origem, na data do pedido (a mesma das vendas). **Canal** e **região geográfica (cliente)** = do cliente da NF, na data de emissão. DESCONHECIDA ou DESCONHECIDO = cadastro ausente ou fora da vigência na data do documento (ADR-0010); fica no total."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_data_faturamento",
+            "queries": [
+              {
+                "name": "faturamento_datas_data_ref",
+                "query": {
+                  "datasetName": "faturamento_datas",
+                  "fields": [
+                    {
+                      "name": "data_ref",
+                      "expression": "`data_ref`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_frescor_param_data_ref",
+                "query": {
+                  "datasetName": "faturamento_frescor",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_kpi_param_data_ref",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_serie_param_data_ref",
+                "query": {
+                  "datasetName": "faturamento_serie",
+                  "parameters": [
+                    {
+                      "name": "data_ref",
+                      "keyword": "data_ref"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "data_ref",
+                    "displayName": "Data de referência",
+                    "queryName": "faturamento_datas_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "faturamento_frescor_param_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "faturamento_kpi_param_data_ref"
+                  },
+                  {
+                    "parameterName": "data_ref",
+                    "queryName": "faturamento_serie_param_data_ref"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Data de referência",
+                "showDescription": true,
+                "description": "Padrão: a última data carregada"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_regiao_faturamento",
+            "queries": [
+              {
+                "name": "faturamento_kpi_commercial_region",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_serie_commercial_region",
+                "query": {
+                  "datasetName": "faturamento_serie",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "commercial_region",
+                    "displayName": "Região comercial",
+                    "queryName": "faturamento_kpi_commercial_region"
+                  },
+                  {
+                    "fieldName": "commercial_region",
+                    "displayName": "Região comercial",
+                    "queryName": "faturamento_serie_commercial_region"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Região comercial"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_regiao_geo_faturamento",
+            "queries": [
+              {
+                "name": "faturamento_kpi_geo_region",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "geo_region",
+                      "expression": "`geo_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_serie_geo_region",
+                "query": {
+                  "datasetName": "faturamento_serie",
+                  "fields": [
+                    {
+                      "name": "geo_region",
+                      "expression": "`geo_region`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "geo_region",
+                    "displayName": "Região geográfica (cliente)",
+                    "queryName": "faturamento_kpi_geo_region"
+                  },
+                  {
+                    "fieldName": "geo_region",
+                    "displayName": "Região geográfica (cliente)",
+                    "queryName": "faturamento_serie_geo_region"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Região geográfica (cliente)"
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 4,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_marca_faturamento",
+            "queries": [
+              {
+                "name": "faturamento_kpi_brand",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_serie_brand",
+                "query": {
+                  "datasetName": "faturamento_serie",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "brand",
+                    "displayName": "Marca",
+                    "queryName": "faturamento_kpi_brand"
+                  },
+                  {
+                    "fieldName": "brand",
+                    "displayName": "Marca",
+                    "queryName": "faturamento_serie_brand"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Marca"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 4,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_canal_faturamento",
+            "queries": [
+              {
+                "name": "faturamento_kpi_sales_channel",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "faturamento_serie_sales_channel",
+                "query": {
+                  "datasetName": "faturamento_serie",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "sales_channel",
+                    "displayName": "Canal",
+                    "queryName": "faturamento_kpi_sales_channel"
+                  },
+                  {
+                    "fieldName": "sales_channel",
+                    "displayName": "Canal",
+                    "queryName": "faturamento_serie_sales_channel"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Canal"
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 4,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "frescor_faturamento",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_frescor",
+                  "fields": [
+                    {
+                      "name": "data_referencia",
+                      "expression": "`data_referencia`"
+                    },
+                    {
+                      "name": "data_comparacao",
+                      "expression": "`data_comparacao`"
+                    },
+                    {
+                      "name": "dados_ate",
+                      "expression": "`dados_ate`"
+                    },
+                    {
+                      "name": "carregados_em",
+                      "expression": "`carregados_em`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "data_referencia",
+                    "displayName": "Data de referência"
+                  },
+                  {
+                    "fieldName": "data_comparacao",
+                    "displayName": "Comparada com (mesmo dia da semana anterior)"
+                  },
+                  {
+                    "fieldName": "dados_ate",
+                    "displayName": "Dados até"
+                  },
+                  {
+                    "fieldName": "carregados_em",
+                    "displayName": "Carregados em (horário de Brasília)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Frescor dos dados",
+                "showDescription": true,
+                "description": "Dados até = última data de emissão carregada. Carregados em = quando o dado mais recente entrou no lakehouse."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_faturamento_liquido",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "displayName": "Faturado líquido (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado líquido (R$)",
+                "showDescription": true,
+                "description": "NFs emitidas na data de referência, menos devoluções"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_devolucoes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "sum(return_amount_ref)",
+                      "expression": "SUM(`return_amount_ref`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(return_amount_ref)",
+                  "displayName": "Devoluções (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Devoluções (R$)",
+                "showDescription": true,
+                "description": "NFs de devolução emitidas na data de referência (valor negativo)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 8,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_faturamento",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_net_amount)",
+                      "expression": "MEASURE(`var_net_amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_net_amount)",
+                  "displayName": "Faturado: variação (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado: variação (R$)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_faturamento_pct",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_net_amount_pct)",
+                      "expression": "MEASURE(`var_net_amount_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_net_amount_pct)",
+                  "displayName": "Faturado: variação (%)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado: variação (%)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 11,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_devolucoes",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_return_amount)",
+                      "expression": "MEASURE(`var_return_amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_return_amount)",
+                  "displayName": "Devoluções: variação (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Devoluções: variação (R$)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior; negativa = mais devolução (o valor é negativo)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 11,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "var_devolucoes_pct",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "measure(var_return_amount_pct)",
+                      "expression": "MEASURE(`var_return_amount_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(var_return_amount_pct)",
+                  "displayName": "Devoluções: variação (%)",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Devoluções: variação (%)",
+                "showDescription": true,
+                "description": "vs mesmo dia da semana anterior; positiva = mais devolução"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 11,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "faturamento_por_regiao",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "commercial_region",
+                      "expression": "`commercial_region`"
+                    },
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    },
+                    {
+                      "name": "sum(net_amount_prev)",
+                      "expression": "SUM(`net_amount_prev`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Faturado líquido (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "commercial_region",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Região comercial"
+                },
+                "label": {
+                  "show": true
+                },
+                "extra": [
+                  {
+                    "fieldName": "sum(net_amount_prev)",
+                    "displayName": "Mesmo dia da semana anterior (R$)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado líquido por região comercial"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "faturamento_por_marca",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "brand",
+                      "expression": "`brand`"
+                    },
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    },
+                    {
+                      "name": "sum(net_amount_prev)",
+                      "expression": "SUM(`net_amount_prev`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Faturado líquido (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "brand",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Marca"
+                },
+                "label": {
+                  "show": true
+                },
+                "extra": [
+                  {
+                    "fieldName": "sum(net_amount_prev)",
+                    "displayName": "Mesmo dia da semana anterior (R$)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado líquido por marca"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 14,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "faturamento_por_canal",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_kpi",
+                  "fields": [
+                    {
+                      "name": "sales_channel",
+                      "expression": "`sales_channel`"
+                    },
+                    {
+                      "name": "sum(net_amount_ref)",
+                      "expression": "SUM(`net_amount_ref`)"
+                    },
+                    {
+                      "name": "sum(net_amount_prev)",
+                      "expression": "SUM(`net_amount_prev`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(net_amount_ref)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Faturado líquido (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sales_channel",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Canal"
+                },
+                "label": {
+                  "show": true
+                },
+                "extra": [
+                  {
+                    "fieldName": "sum(net_amount_prev)",
+                    "displayName": "Mesmo dia da semana anterior (R$)"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado líquido por canal"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 14,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "faturamento_serie_diaria",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "faturamento_serie",
+                  "fields": [
+                    {
+                      "name": "daily(issue_date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `issue_date`)"
+                    },
+                    {
+                      "name": "sum(net_amount)",
+                      "expression": "SUM(`net_amount`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(issue_date)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "Data de emissão"
+                },
+                "y": {
+                  "fieldName": "sum(net_amount)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Faturado líquido (R$)",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Faturado líquido diário: 8 semanas até a data de referência"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 20,
+            "width": 12,
+            "height": 6
+          }
+        }
+      ]
+    }
+  ]
+}

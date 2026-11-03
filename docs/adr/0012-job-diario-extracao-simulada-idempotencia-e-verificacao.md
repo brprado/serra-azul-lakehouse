@@ -1,6 +1,6 @@
 # ADR-0012: Rodar a carga diária no job serra_azul_daily, com extração simulada determinística e verificação de unicidade
 
-- **Status:** aceito (2026-10-28, depois de duas revisões do `adr-reviewer` e da checagem do `free-edition-checker`)
+- **Status:** aceito (2026-10-28, depois de duas revisões do `adr-reviewer` e da checagem do `free-edition-checker`) — emendado pelo [ADR-0013](0013-dashboard-comercial-data-de-referencia-e-atualizacao-pelo-job.md) (D7 e D8: a `verify_uniqueness` deixa de ser a última tarefa; o job ganha a 5ª tarefa, `refresh_dashboard`, depois dela, com 1 retentativa e timeout de 600 s). O ADR-0013 também fecha a pendência "ainda não rodaram no job" das 3 contagens novas do D7 (10 zeros em 2026-11-01) e registra um defeito de corte do simulador, corrigido em 2026-11-01: as extrações de 2026-10-20 a 2026-11-01 traziam cancelamentos de D + 1 (267 linhas), e o conteúdo de cada extração passa a depender também da versão do gerador
 - **Data:** 2026-10-28
 - **Fatia:** fatia 1 — Comercial
 - **Decisor:** Engenheiro de Dados Sênior (Claude) · **Acompanhamento:** usuário (pode vetar)
